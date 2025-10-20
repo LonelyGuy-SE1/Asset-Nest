@@ -7,6 +7,8 @@
     "codegen": "envio codegen",
     "test": "echo \"No tests specified\" && exit 0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "envio": "2.30.1"
+  },
   "devDependencies": {}
 }
