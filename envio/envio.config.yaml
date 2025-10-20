@@ -4,7 +4,6 @@
 
 name: asset-nest-portfolio-rebalancer
 description: Indexes MetaMask Smart Account events and swap transactions on Monad testnet for AI-powered portfolio rebalancing
-version: 1.0.0
 ecosystem: evm
 
 # Networks - Monad Testnet

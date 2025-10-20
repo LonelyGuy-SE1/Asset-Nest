@@ -4,7 +4,6 @@
 
 name: asset-nest-indexer
 description: Indexes MetaMask Smart Account events and swap transactions on Monad
-version: 1.0.0
 
 # Networks configuration
 networks:
