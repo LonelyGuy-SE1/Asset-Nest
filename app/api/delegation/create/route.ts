@@ -70,9 +70,15 @@ export async function POST(request: NextRequest) {
     // Sign and store the delegation
     const { signature } = await signAndStoreDelegation(delegation, signerPrivateKey as Hex);
 
+    // Serialize delegation with BigInt converted to string
+    const serializedDelegation = {
+      ...delegation,
+      salt: delegation.salt.toString(),
+    };
+
     return NextResponse.json({
       success: true,
-      delegation,
+      delegation: serializedDelegation,
       signature,
       message: 'Delegation created and stored successfully',
     });

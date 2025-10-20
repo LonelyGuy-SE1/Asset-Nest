@@ -3,15 +3,17 @@
 @tailwind utilities;
 
 :root {
-  --vscode-bg: #1e1e1e;
-  --vscode-sidebar: #252526;
-  --vscode-panel: #2d2d30;
-  --vscode-accent: #007acc;
-  --vscode-text: #cccccc;
-  --vscode-border: #3e3e42;
-  --vscode-success: #89d185;
-  --vscode-warning: #cca700;
-  --vscode-error: #f48771;
+  --bg-black: #000000;
+  --bg-dark: #0a0a0a;
+  --bg-panel: #141414;
+  --neon-cyan: #00fff7;
+  --neon-pink: #ff00ff;
+  --neon-green: #39ff14;
+  --neon-purple: #bf00ff;
+  --neon-blue: #00d4ff;
+  --text-white: #ffffff;
+  --text-gray: #a0a0a0;
+  --border-cyan: #00fff7;
 }
 
 * {
@@ -21,147 +23,200 @@
 }
 
 body {
-  background-color: var(--vscode-bg);
-  color: var(--vscode-text);
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: var(--bg-black);
+  color: var(--text-white);
+  font-family: 'Segoe UI', 'Roboto', sans-serif;
   line-height: 1.6;
+  min-height: 100vh;
 }
 
-/* Scrollbar styling */
+/* Neon Border Effects */
+.neon-border {
+  border: 2px solid var(--neon-cyan);
+  box-shadow:
+    0 0 10px var(--neon-cyan),
+    inset 0 0 10px rgba(0, 255, 247, 0.1);
+}
+
+.neon-text {
+  color: var(--neon-cyan);
+  text-shadow:
+    0 0 10px var(--neon-cyan),
+    0 0 20px var(--neon-cyan);
+}
+
+.neon-glow {
+  box-shadow:
+    0 0 20px var(--neon-cyan),
+    0 0 40px var(--neon-cyan);
+}
+
+/* Scrollbar */
 ::-webkit-scrollbar {
   width: 12px;
-  height: 12px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--vscode-sidebar);
+  background: var(--bg-dark);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--vscode-border);
+  background: var(--neon-cyan);
   border-radius: 6px;
+  box-shadow: 0 0 10px var(--neon-cyan);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #555;
-}
-
-/* Custom button styles */
+/* Buttons */
 .btn {
-  @apply px-4 py-2 rounded transition-all duration-200 font-medium cursor-pointer;
+  @apply px-6 py-3 rounded-lg transition-all duration-300 font-bold cursor-pointer;
+  text-transform: uppercase;
+  letter-spacing: 2px;
 }
 
 .btn-primary {
-  background-color: var(--vscode-accent);
-  color: white;
+  background: var(--bg-black);
+  color: var(--neon-cyan);
+  border: 2px solid var(--neon-cyan);
+  box-shadow: 0 0 20px rgba(0, 255, 247, 0.5);
 }
 
 .btn-primary:hover {
-  background-color: #005a9e;
+  background: rgba(0, 255, 247, 0.1);
+  box-shadow: 0 0 30px rgba(0, 255, 247, 0.8);
+  transform: translateY(-2px);
 }
 
 .btn-primary:disabled {
-  background-color: #555;
+  background: var(--bg-dark);
+  border-color: #666;
+  color: #666;
+  box-shadow: none;
   cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .btn-secondary {
-  background-color: var(--vscode-panel);
-  color: var(--vscode-text);
-  border: 1px solid var(--vscode-border);
+  background: var(--bg-black);
+  color: var(--neon-pink);
+  border: 2px solid var(--neon-pink);
+  box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
 }
 
 .btn-secondary:hover {
-  background-color: var(--vscode-sidebar);
+  background: rgba(255, 0, 255, 0.1);
+  box-shadow: 0 0 20px rgba(255, 0, 255, 0.8);
 }
 
 .btn-success {
-  background-color: var(--vscode-success);
-  color: var(--vscode-bg);
+  background: var(--bg-black);
+  color: var(--neon-green);
+  border: 2px solid var(--neon-green);
+  box-shadow: 0 0 20px rgba(57, 255, 20, 0.5);
+}
+
+.btn-success:hover {
+  background: rgba(57, 255, 20, 0.1);
+  box-shadow: 0 0 30px rgba(57, 255, 20, 0.8);
 }
 
 .btn-danger {
-  background-color: var(--vscode-error);
-  color: white;
+  background: var(--bg-black);
+  color: #ff006e;
+  border: 2px solid #ff006e;
+  box-shadow: 0 0 20px rgba(255, 0, 110, 0.5);
 }
 
-/* Card styles */
+.btn-danger:hover {
+  background: rgba(255, 0, 110, 0.1);
+  box-shadow: 0 0 30px rgba(255, 0, 110, 0.8);
+}
+
+/* Cards */
 .card {
-  background-color: var(--vscode-sidebar);
-  border: 1px solid var(--vscode-border);
-  border-radius: 8px;
-  padding: 1.5rem;
+  background: var(--bg-black);
+  border: 2px solid var(--neon-cyan);
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 0 20px rgba(0, 255, 247, 0.3);
 }
 
-/* Input styles */
+/* Inputs */
 input,
 select,
 textarea {
-  background-color: var(--vscode-panel);
-  color: var(--vscode-text);
-  border: 1px solid var(--vscode-border);
-  border-radius: 4px;
-  padding: 0.5rem;
+  background: var(--bg-black);
+  color: var(--text-white);
+  border: 2px solid var(--neon-cyan);
+  border-radius: 8px;
+  padding: 0.75rem;
   width: 100%;
-  transition: border-color 0.2s;
+  transition: all 0.3s;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--vscode-accent);
+  border-color: var(--neon-pink);
+  box-shadow: 0 0 20px rgba(255, 0, 255, 0.5);
 }
 
-/* Loading spinner */
+/* Loading Spinner */
 .spinner {
-  border: 3px solid var(--vscode-border);
-  border-top: 3px solid var(--vscode-accent);
+  border: 4px solid rgba(0, 255, 247, 0.1);
+  border-top: 4px solid var(--neon-cyan);
   border-radius: 50%;
-  width: 24px;
-  height: 24px;
+  width: 40px;
+  height: 40px;
   animation: spin 1s linear infinite;
+  box-shadow: 0 0 20px rgba(0, 255, 247, 0.5);
 }
 
 @keyframes spin {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
-/* Status indicators */
+/* Status Indicators */
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   display: inline-block;
   margin-right: 8px;
+  box-shadow: 0 0 10px currentColor;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .status-success {
-  background-color: var(--vscode-success);
+  background-color: var(--neon-green);
+  box-shadow: 0 0 15px var(--neon-green);
 }
 
 .status-warning {
-  background-color: var(--vscode-warning);
+  background-color: var(--neon-pink);
+  box-shadow: 0 0 15px var(--neon-pink);
 }
 
 .status-error {
-  background-color: var(--vscode-error);
+  background-color: #ff006e;
+  box-shadow: 0 0 15px #ff006e;
 }
 
 /* Animations */
 .fade-in {
-  animation: fadeIn 0.3s ease-in;
+  animation: fadeIn 0.5s ease-in;
 }
 
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateY(-20px);
   }
   to {
     opacity: 1;
@@ -169,7 +224,7 @@ textarea:focus {
   }
 }
 
-/* Table styles */
+/* Table */
 table {
   width: 100%;
   border-collapse: collapse;
@@ -177,25 +232,83 @@ table {
 
 th,
 td {
-  padding: 12px;
+  padding: 16px;
   text-align: left;
-  border-bottom: 1px solid var(--vscode-border);
+  border-bottom: 1px solid rgba(0, 255, 247, 0.3);
 }
 
 th {
-  font-weight: 600;
-  color: var(--vscode-accent);
+  font-weight: 700;
+  color: var(--neon-cyan);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-size: 0.9rem;
 }
 
 tr:hover {
-  background-color: var(--vscode-panel);
+  background: rgba(0, 255, 247, 0.05);
 }
 
-/* Code/monospace text */
+/* Code/Monospace */
 .mono {
   font-family: 'Courier New', Courier, monospace;
-  background-color: var(--vscode-panel);
-  padding: 2px 6px;
-  border-radius: 3px;
+  background: var(--bg-panel);
+  padding: 4px 8px;
+  border-radius: 4px;
   font-size: 0.9em;
+  border: 1px solid rgba(0, 255, 247, 0.3);
+}
+
+/* Layout Styles */
+.vscode-bg {
+  background: var(--bg-black);
+}
+
+.vscode-sidebar {
+  background: var(--bg-dark);
+  border: 1px solid var(--bg-panel);
+}
+
+.vscode-panel {
+  background: var(--bg-panel);
+}
+
+.vscode-accent {
+  color: var(--neon-cyan);
+}
+
+.vscode-text {
+  color: var(--text-white);
+}
+
+.vscode-border {
+  border-color: var(--neon-cyan);
+}
+
+.vscode-error {
+  background: var(--bg-black);
+  border: 2px solid #ff006e;
+  color: #ff006e;
+}
+
+.vscode-success {
+  background: var(--bg-black);
+  border: 2px solid var(--neon-green);
+  color: var(--neon-green);
+}
+
+/* Grid Background */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image:
+    linear-gradient(rgba(0, 255, 247, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 247, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+  pointer-events: none;
+  z-index: -1;
 }
