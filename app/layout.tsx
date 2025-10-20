@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { Providers } from './providers';
 
 export const metadata: Metadata = {
   title: 'Asset Nest - AI Portfolio Rebalancer',
@@ -14,7 +15,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <div className="min-h-screen bg-vscode-bg">
+        <Providers>
+          <div className="min-h-screen bg-vscode-bg">
           <header className="bg-vscode-sidebar border-b border-vscode-border">
             <div className="container mx-auto px-4 py-4">
               <div className="flex items-center justify-between">
@@ -48,6 +50,7 @@ export default function RootLayout({
             </div>
           </footer>
         </div>
+        </Providers>
       </body>
     </html>
   );

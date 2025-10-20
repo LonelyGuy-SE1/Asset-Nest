@@ -11,7 +11,10 @@
       "Bash(curl -s http://localhost:3000/api/health)",
       "Bash(curl -s -X POST http://localhost:3001/api/health)",
       "Bash(python -m json.tool)",
-      "Bash(curl -v http://localhost:3001/api/health)"
+      "Bash(curl -v http://localhost:3001/api/health)",
+      "Bash(git init)",
+      "Bash(git add .)",
+      "Bash(git commit -m \"Initial commit: Asset Nest portfolio rebalancer\")"
     ],
     "deny": [],
     "ask": []
