@@ -9,7 +9,6 @@ ecosystem: evm
 # Networks - Monad Testnet
 networks:
   - id: 10143
-    name: monad-testnet
     start_block: 0
     # RPC endpoint for Monad testnet
     rpc_config:
