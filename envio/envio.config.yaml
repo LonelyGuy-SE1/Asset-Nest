@@ -19,17 +19,20 @@ networks:
       interval_ceiling: 10000
       backoff_millis: 5000
       query_timeout_millis: 20000
+    # Contracts to index on this network
+    # Note: These are placeholder addresses - update with actual deployed contract addresses
+    # Get actual addresses from:
+    # - MetaMask Smart Account Factory: https://docs.metamask.io/delegation-toolkit/
+    # - Monorail Router: https://testnet-preview.monorail.xyz/developers
+    contracts:
+      # UserOperationEvent from EntryPoint contract (ERC-4337)
+      - name: EntryPoint
+        address: "0x0000000071727De22E5E9d8BAf0edAc6f37da032" # ERC-4337 EntryPoint v0.7 (standard address)
 
-# Contracts to index
-# Note: These are placeholder addresses - update with actual deployed contract addresses
-# Get actual addresses from:
-# - MetaMask Smart Account Factory: https://docs.metamask.io/delegation-toolkit/
-# - Monorail Router: https://testnet-preview.monorail.xyz/developers
+# Global contracts definition
 contracts:
   # UserOperationEvent from EntryPoint contract (ERC-4337)
   - name: EntryPoint
-    address:
-      - address: "0x0000000071727De22E5E9d8BAf0edAc6f37da032" # ERC-4337 EntryPoint v0.7 (standard address)
     handler: src/EventHandlers.ts
     events:
       - event: "UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)"
