@@ -1,0 +1,50 @@
+# Envio HyperIndex Configuration for Asset Nest on Monad
+# Reference: https://docs.envio.dev/docs/HyperIndex/configuration-file
+# Reference: https://docs.envio.dev/docs/HyperIndex/monad-testnet
+
+name: asset-nest-portfolio-rebalancer
+description: Indexes MetaMask Smart Account events and swap transactions on Monad testnet for AI-powered portfolio rebalancing
+version: 1.0.0
+ecosystem: evm
+
+# Networks - Monad Testnet
+networks:
+  - id: 10143
+    name: monad-testnet
+    start_block: 0
+    # RPC endpoint for Monad testnet
+    rpc_config:
+      url: https://testnet-rpc.monad.xyz
+      initial_block_interval: 10000
+      backoff_multiplicative: 0.8
+      acceleration_additive: 2000
+      interval_ceiling: 10000
+      backoff_millis: 5000
+      query_timeout_millis: 20000
+
+# Contracts to index
+# Note: These are placeholder addresses - update with actual deployed contract addresses
+# Get actual addresses from:
+# - MetaMask Smart Account Factory: https://docs.metamask.io/delegation-toolkit/
+# - Monorail Router: https://testnet-preview.monorail.xyz/developers
+contracts:
+  # UserOperationEvent from EntryPoint contract (ERC-4337)
+  - name: EntryPoint
+    address:
+      - address: "0x0000000071727De22E5E9d8BAf0edAc6f37da032" # ERC-4337 EntryPoint v0.7 (standard address)
+    handler: src/EventHandlers.ts
+    events:
+      - event: "UserOperationEvent(bytes32 indexed userOpHash, address indexed sender, address indexed paymaster, uint256 nonce, bool success, uint256 actualGasCost, uint256 actualGasUsed)"
+      - event: "AccountDeployed(bytes32 indexed userOpHash, address indexed sender, address factory, address paymaster)"
+
+# Unordered multichain mode for faster indexing
+unordered_multichain_mode: true
+
+# Enable rollback handling
+rollback_on_reorg: true
+
+# Event decoder settings
+event_decoder: viem-indexed
+
+# Wildcard indexing (to catch all UserOp events from any smart account)
+wildcard_indexing: true

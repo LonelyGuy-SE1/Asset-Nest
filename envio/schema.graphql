@@ -1,0 +1,108 @@
+# Envio GraphQL Schema for Asset Nest Indexer
+# Reference: https://docs.envio.dev/docs/HyperIndex/configuration-file
+
+# Smart Account entity
+type SmartAccount @entity {
+  id: ID! # Smart account address
+  owner: String!
+  deployedAt: BigInt
+  deploymentTxHash: String
+  isDeployed: Boolean!
+  createdAt: BigInt!
+  totalTrades: Int!
+  totalVolume: BigDecimal!
+  delegations: [Delegation!]! @derivedFrom(field: "delegator")
+  trades: [Trade!]! @derivedFrom(field: "smartAccount")
+}
+
+# Delegation entity
+type Delegation @entity {
+  id: ID! # Delegation hash
+  delegator: SmartAccount!
+  delegatorAddress: String!
+  delegate: String!
+  delegationHash: String!
+  createdAt: BigInt!
+  createdTxHash: String!
+  redeemedAt: BigInt
+  redeemedTxHash: String
+  revokedAt: BigInt
+  revokedTxHash: String
+  isActive: Boolean!
+  type: DelegationType!
+}
+
+enum DelegationType {
+  OPEN
+  ERC20_SPENDING
+  RESTRICTED
+}
+
+# Trade entity (from Monorail swaps)
+type Trade @entity {
+  id: ID! # Transaction hash + log index
+  smartAccount: SmartAccount!
+  smartAccountAddress: String!
+  sender: String!
+  recipient: String!
+  tokenIn: String!
+  tokenOut: String!
+  amountIn: BigDecimal!
+  amountOut: BigDecimal!
+  priceImpact: BigDecimal
+  executedAt: BigInt!
+  txHash: String!
+  blockNumber: BigInt!
+}
+
+# Portfolio Snapshot (periodic snapshots of account holdings)
+type PortfolioSnapshot @entity {
+  id: ID! # Smart account address + timestamp
+  smartAccount: SmartAccount!
+  smartAccountAddress: String!
+  timestamp: BigInt!
+  totalValueUSD: BigDecimal!
+  holdings: [TokenHolding!]! @derivedFrom(field: "snapshot")
+}
+
+# Token Holding within a snapshot
+type TokenHolding @entity {
+  id: ID! # Snapshot ID + token address
+  snapshot: PortfolioSnapshot!
+  token: String!
+  symbol: String!
+  balance: BigDecimal!
+  valueUSD: BigDecimal!
+  percentage: BigDecimal!
+}
+
+# Rebalancing Event (aggregate of trades that form a rebalancing operation)
+type RebalancingEvent @entity {
+  id: ID! # Generated ID
+  smartAccount: SmartAccount!
+  smartAccountAddress: String!
+  startedAt: BigInt!
+  completedAt: BigInt
+  trades: [Trade!]!
+  totalGasUsed: BigInt!
+  status: RebalancingStatus!
+  aiRationale: String
+}
+
+enum RebalancingStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+# Analytics entity (aggregated stats)
+type GlobalStats @entity {
+  id: ID! # Always "global"
+  totalSmartAccounts: Int!
+  totalDelegations: Int!
+  totalTrades: Int!
+  totalVolumeUSD: BigDecimal!
+  totalRebalancingEvents: Int!
+  lastUpdatedAt: BigInt!
+}
