@@ -1,18 +1,49 @@
-'use client';
+"use client";
 
-import { useAccount, useConnect, useDisconnect, useSignTypedData, useChainId } from 'wagmi';
-import { useState, useEffect } from 'react';
-import axios from 'axios';
-import { privateKeyToAccount } from 'viem/accounts';
-import { getDeterministicAgentAddress } from '@/lib/utils/agent';
+import {
+  useAccount,
+  useConnect,
+  useDisconnect,
+  useSignTypedData,
+  useChainId,
+} from "wagmi";
+import { useState, useEffect } from "react";
+import axios from "axios";
+import { privateKeyToAccount } from "viem/accounts";
+import { getDeterministicAgentAddress } from "@/lib/utils/agent";
+import {
+  formatNumber,
+  formatUSD,
+  formatPercentage,
+  formatTokenBalance,
+} from "@/lib/utils/format";
+import { formatTokenAmount } from "@/lib/monorail/swap";
+import { activityLogger } from "@/lib/utils/activity-logger";
+import { assetNestIndexer } from "@/lib/indexing/asset-nest-indexer";
+import { Modal, ConfirmModal, CopyButton } from "@/components/Modal";
+import { getStoredDelegation } from "@/lib/smart-account/delegation";
+
+// Extend Window interface for Ethereum provider
+declare global {
+  interface Window {
+    ethereum?: any;
+  }
+}
 
 interface Holding {
   token: string;
   symbol: string;
+  name: string;
   balance: string;
   decimals: number;
   valueUSD: number;
   percentage: number;
+  price: number;
+  logo?: string;
+  categories?: string[];
+  pconf?: string;
+  monValue?: string;
+  monPerToken?: string;
 }
 
 interface Target {
@@ -44,58 +75,201 @@ export default function Home() {
 
   const [mounted, setMounted] = useState(false);
   const [showHero, setShowHero] = useState(true);
-  const [step, setStep] = useState<'connect' | 'setup' | 'portfolio' | 'rebalance'>('connect');
+  const [step, setStep] = useState<
+    "delegation" | "portfolio" | "rebalance" | "swap" | "logs"
+  >("delegation");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-  const [smartAccountAddress, setSmartAccountAddress] = useState('');
-  const [agentAddress, setAgentAddress] = useState('');
+  // Notification system
+  const [notifications, setNotifications] = useState<
+    Array<{
+      id: string;
+      type: "error" | "warning" | "info";
+      title: string;
+      message: string;
+      timestamp: number;
+    }>
+  >([]);
+
+  const [smartAccountAddress, setSmartAccountAddress] = useState("");
+  const [agentAddress, setAgentAddress] = useState("");
   const [delegationCreated, setDelegationCreated] = useState(false);
+  const [delegationTimestamp, setDelegationTimestamp] = useState<number | null>(
+    null
+  );
   const [showDelegationDetails, setShowDelegationDetails] = useState(false);
+  const [showRevokeModal, setShowRevokeModal] = useState(false);
+
+  // Delegation parameters
+  const [delegationParams, setDelegationParams] = useState({
+    maxTradesPerDay: 10,
+    maxTradeAmount: 100, // USD
+    allowedTokens: ["MON", "USDC", "USDT", "WETH"],
+    rebalanceFrequency: "manual", // "manual", "daily", "weekly"
+    riskLevel: "medium", // "low", "medium", "high"
+    expirationDays: 30,
+  });
 
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [totalValueUSD, setTotalValueUSD] = useState(0);
+  const [expandedToken, setExpandedToken] = useState<string | null>(null);
 
   const [targets, setTargets] = useState<Target[]>([
-    { symbol: 'MON', targetPercentage: 40 },
-    { symbol: 'USDC', targetPercentage: 30 },
-    { symbol: 'USDT', targetPercentage: 20 },
-    { symbol: 'WETH', targetPercentage: 10 },
+    { symbol: "MON", targetPercentage: 40 },
+    { symbol: "USDC", targetPercentage: 30 },
+    { symbol: "USDT", targetPercentage: 20 },
+    { symbol: "WETH", targetPercentage: 10 },
   ]);
   const [strategy, setStrategy] = useState<Strategy | null>(null);
+
+  // AI Analysis state
+  const [aiAnalysis, setAiAnalysis] = useState<{
+    isAnalyzing: boolean;
+    result: any;
+    showWindow: boolean;
+  }>({
+    isAnalyzing: false,
+    result: null,
+    showWindow: false,
+  });
+
+  // Swap state
+  const [swapState, setSwapState] = useState<{
+    fromToken: string;
+    toToken: string;
+    fromAmount: string;
+    toAmount: string;
+    slippage: string;
+    deadline: string;
+    priority: string;
+    quote: any;
+    loadingQuote: boolean;
+    allTokens: any[];
+    loadingTokens: boolean;
+  }>({
+    fromToken: "",
+    toToken: "",
+    fromAmount: "",
+    toAmount: "",
+    slippage: "0.5",
+    deadline: "10",
+    priority: "normal",
+    quote: null,
+    loadingQuote: false,
+    allTokens: [],
+    loadingTokens: false,
+  });
+
+  // Notification management functions
+  const addNotification = (
+    type: "error" | "warning" | "info",
+    title: string,
+    message: string
+  ) => {
+    const id = Date.now().toString();
+    setNotifications((prev) => [
+      ...prev,
+      {
+        id,
+        type,
+        title,
+        message,
+        timestamp: Date.now(),
+      },
+    ]);
+
+    // Auto-remove after 8 seconds for non-error notifications
+    if (type !== "error") {
+      setTimeout(() => {
+        removeNotification(id);
+      }, 8000);
+    }
+  };
+
+  const removeNotification = (id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  };
 
   // Fix hydration by only rendering after mount
   useEffect(() => {
     setMounted(true);
-  }, []);
+    // Load persisted smart account on mount
+    if (address) {
+      const persistedSmartAccount = localStorage.getItem(
+        `smartAccount_${address}`
+      );
+      if (persistedSmartAccount) {
+        setSmartAccountAddress(persistedSmartAccount);
+      }
+    }
+  }, [address]);
 
   // Auto-proceed when wallet connects and set deterministic agent address
   useEffect(() => {
     if (isConnected && address && !smartAccountAddress && mounted) {
+      activityLogger.success("WALLET", `Wallet connected: ${address}`);
       setShowHero(false);
-      setStep('setup');
-      setSuccess(`Wallet connected: ${address.slice(0, 10)}...`);
+      setStep("delegation");
+      addNotification(
+        "info",
+        "Wallet Connected",
+        `${address.slice(0, 10)}...${address.slice(-6)}`
+      );
 
       // Set deterministic agent address immediately on connection
       const deterministicAgentAddr = getDeterministicAgentAddress(address);
       setAgentAddress(deterministicAgentAddr);
+      activityLogger.info(
+        "AGENT",
+        `Agent address generated: ${deterministicAgentAddr}`
+      );
     }
   }, [isConnected, address, mounted]);
 
+  // Save smart account to localStorage when it changes
+  useEffect(() => {
+    if (smartAccountAddress && address) {
+      localStorage.setItem(`smartAccount_${address}`, smartAccountAddress);
+    }
+  }, [smartAccountAddress, address]);
+
+  // Check for existing delegation when agent address is set
+  useEffect(() => {
+    if (agentAddress && mounted) {
+      const existingDelegation = getStoredDelegation(
+        agentAddress as `0x${string}`
+      );
+      if (existingDelegation) {
+        activityLogger.success(
+          "DELEGATION",
+          "Found existing delegation - skipping creation"
+        );
+        setDelegationCreated(true);
+        setSuccess("Existing delegation found! Ready to rebalance.");
+      }
+    }
+  }, [agentAddress, mounted]);
+
   // Handle disconnect - reset to hero page
   const handleDisconnect = () => {
+    activityLogger.warning(
+      "WALLET",
+      "Disconnecting wallet and resetting app state"
+    );
     disconnect();
     setShowHero(true);
-    setStep('connect');
-    setSmartAccountAddress('');
-    setAgentAddress('');
+    setStep("delegation");
+    setSmartAccountAddress("");
+    setAgentAddress("");
     setDelegationCreated(false);
+    setDelegationTimestamp(null);
     setHoldings([]);
     setTotalValueUSD(0);
     setStrategy(null);
-    setError('');
-    setSuccess('');
+    setError("");
+    setSuccess("");
   };
 
   // Handle revoke delegation
@@ -103,19 +277,20 @@ export default function Home() {
     if (!smartAccountAddress || !agentAddress) return;
 
     setLoading(true);
-    setError('');
-    setSuccess('');
+    setError("");
+    setSuccess("");
     try {
-      const response = await axios.post('/api/delegation/revoke', {
+      const response = await axios.post("/api/delegation/revoke", {
         smartAccountAddress,
         agentAddress,
       });
 
       setDelegationCreated(false);
-      setSuccess('Delegation revoked successfully! You can create a new one.');
+      setDelegationTimestamp(null);
+      setSuccess("Delegation revoked successfully! You can create a new one.");
     } catch (err: any) {
-      console.error('Delegation revoke error:', err);
-      setError(err.response?.data?.error || 'Failed to revoke delegation');
+      console.error("Delegation revoke error:", err);
+      setError(err.response?.data?.error || "Failed to revoke delegation");
     } finally {
       setLoading(false);
     }
@@ -124,28 +299,50 @@ export default function Home() {
   const handleCreateSmartAccount = async () => {
     if (!address) return;
 
+    activityLogger.info("SMART_ACCOUNT", "Creating MetaMask Smart Account...");
     setLoading(true);
-    setError('');
+    setError("");
     try {
       // Generate a deterministic private key from wallet address for demo
-      // In production, use proper MetaMask SDK
-      const demoPrivateKey = `0x${address.slice(2).padStart(64, '0')}`;
+      // In production, use proper MetaMask SDK or hardware wallets
+      // This creates a valid 32-byte private key by hashing the address
+      const addressBytes = address.slice(2).toLowerCase();
+      const paddedAddress = addressBytes.padEnd(64, "0");
+      const demoPrivateKey = `0x${paddedAddress}`;
 
-      const response = await axios.post('/api/smart-account/create', {
+      // Validate the private key format
+      if (demoPrivateKey.length !== 66) {
+        throw new Error("Invalid private key format generated");
+      }
+
+      const response = await axios.post("/api/smart-account/create", {
         signerPrivateKey: demoPrivateKey,
       });
 
       setSmartAccountAddress(response.data.smartAccountAddress);
-      setSuccess(`Smart Account created: ${response.data.smartAccountAddress.slice(0, 10)}...`);
+      activityLogger.success(
+        "SMART_ACCOUNT",
+        `Smart Account created: ${response.data.smartAccountAddress}`
+      );
+      setSuccess(
+        `Smart Account created: ${response.data.smartAccountAddress.slice(
+          0,
+          10
+        )}...`
+      );
 
       // Generate deterministic agent address based on wallet address
       // This ensures the same wallet always gets the same agent address
       const deterministicAgentAddr = getDeterministicAgentAddress(address);
       setAgentAddress(deterministicAgentAddr);
-
     } catch (err: any) {
-      console.error('Smart account creation error:', err);
-      setError(err.response?.data?.error || 'Failed to create smart account');
+      console.error("Smart account creation error:", err);
+      activityLogger.error(
+        "SMART_ACCOUNT",
+        "Failed to create smart account",
+        err.message
+      );
+      setError(err.response?.data?.error || "Failed to create smart account");
     } finally {
       setLoading(false);
     }
@@ -154,96 +351,332 @@ export default function Home() {
   const handleCreateDelegation = async () => {
     if (!smartAccountAddress || !agentAddress || !address) return;
 
+    activityLogger.info(
+      "DELEGATION",
+      "Starting delegation creation process..."
+    );
     setLoading(true);
-    setError('');
-    setSuccess('');
+    setError("");
+    setSuccess("");
     try {
-      // Create EIP-712 typed data for delegation signature
-      const domain = {
-        name: 'Asset Nest Delegation',
-        version: '1',
-        chainId: chainId, // Use connected wallet's chainId
-        verifyingContract: smartAccountAddress as `0x${string}`,
-      };
+      // Validate chainId - must be on Monad testnet
+      if (!chainId || chainId !== 10143) {
+        activityLogger.warning(
+          "NETWORK",
+          `Wrong network detected (Chain ID: ${chainId}). Switching to Monad Testnet...`
+        );
+        setError(
+          `Wrong network detected. Attempting to switch to Monad Testnet...`
+        );
 
-      const types = {
-        Delegation: [
-          { name: 'delegate', type: 'address' },
-          { name: 'delegator', type: 'address' },
-          { name: 'authority', type: 'address' },
-          { name: 'caveats', type: 'Caveat[]' },
-          { name: 'salt', type: 'uint256' },
-        ],
-        Caveat: [
-          { name: 'enforcer', type: 'address' },
-          { name: 'terms', type: 'bytes' },
-        ],
-      };
+        try {
+          // Try to switch to Monad Testnet
+          await window.ethereum?.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x279F" }], // 10143 in hex
+          });
+          activityLogger.success(
+            "NETWORK",
+            "Successfully switched to Monad Testnet"
+          );
 
-      const salt = BigInt(Date.now());
+          // Wait a brief moment for the switch to complete
+          await new Promise((resolve) => setTimeout(resolve, 500));
 
-      const message = {
-        delegate: agentAddress,
-        delegator: smartAccountAddress,
-        authority: '0x0000000000000000000000000000000000000000' as `0x${string}`,
-        caveats: [],
-        salt,
-      };
+          // Check if switch was successful
+          const newChainId = await window.ethereum?.request({
+            method: "eth_chainId",
+          });
+          if (parseInt(newChainId, 16) === 10143) {
+            // Continue with delegation creation
+            setError("");
+            setSuccess("Network switched successfully! Creating delegation...");
+          } else {
+            window.location.reload();
+          }
+        } catch (switchError: any) {
+          if (switchError.code === 4902) {
+            // Chain doesn't exist, add it
+            try {
+              await window.ethereum?.request({
+                method: "wallet_addEthereumChain",
+                params: [
+                  {
+                    chainId: "0x279F",
+                    chainName: "Monad Testnet",
+                    nativeCurrency: {
+                      name: "MON",
+                      symbol: "MON",
+                      decimals: 18,
+                    },
+                    rpcUrls: ["https://testnet-rpc.monad.xyz"],
+                    blockExplorerUrls: ["https://testnet.monadexplorer.com"],
+                  },
+                ],
+              });
+              setSuccess(
+                "Monad Testnet added! Please try creating delegation again."
+              );
+            } catch (addError) {
+              setError(
+                "Failed to add Monad Testnet. Please add it manually in MetaMask."
+              );
+            }
+          } else {
+            setError("Please switch to Monad Testnet manually in MetaMask.");
+          }
+        }
+        setLoading(false);
+        return;
+      }
 
-      // Trigger MetaMask signature popup
-      const signature = await signTypedDataAsync({
-        domain,
-        types,
-        primaryType: 'Delegation',
-        message,
-      });
+      console.log("Creating delegation with MetaMask Delegation Toolkit...");
+      console.log("Smart Account Address:", smartAccountAddress);
+      console.log("Agent Address:", agentAddress);
+      console.log("Chain ID:", chainId);
 
-      setSuccess('Signature received! Creating delegation...');
+      setSuccess("Please sign the delegation in your wallet...");
 
-      // For demo purposes, we'll still use the API with private key
-      // In production, send the signature to the backend
-      const demoPrivateKey = `0x${address.slice(2).padStart(64, '0')}`;
-
-      const response = await axios.post('/api/delegation/create', {
+      // Step 1: Create unsigned delegation with user parameters
+      const delegationResponse = await axios.post("/api/delegation/create", {
         smartAccountAddress,
         agentAddress,
-        signerPrivateKey: demoPrivateKey,
-        type: 'open',
+        userWalletAddress: address,
+        type: "open",
+        requestSignature: false, // Just create the delegation, don't sign yet
+        // Include user-configured delegation parameters with proper type conversion
+        maxTradeAmount: String(delegationParams.maxTradeAmount),
+        maxTradesPerDay: String(delegationParams.maxTradesPerDay),
+        riskLevel: String(delegationParams.riskLevel),
+        expirationDays: String(delegationParams.expirationDays),
+        allowedTokens: Array.isArray(delegationParams.allowedTokens)
+          ? delegationParams.allowedTokens
+          : [delegationParams.allowedTokens].filter(Boolean),
+      });
+
+      const unsignedDelegation = delegationResponse.data.delegation;
+
+      setSuccess("Please sign the delegation message in MetaMask...");
+
+      // Step 2: Ask user to sign the delegation via MetaMask
+      if (!window.ethereum) {
+        throw new Error("MetaMask not found");
+      }
+
+      // Get the current chainId from MetaMask to ensure it matches
+      const currentChainId = await window.ethereum.request({
+        method: "eth_chainId",
+      });
+      const currentChainIdDecimal = parseInt(currentChainId, 16);
+
+      console.log("Our chainId:", chainId);
+      console.log("MetaMask chainId:", currentChainIdDecimal);
+
+      if (currentChainIdDecimal !== chainId) {
+        throw new Error(
+          `Chain mismatch: Expected ${chainId}, got ${currentChainIdDecimal}. Please switch to Monad Testnet.`
+        );
+      }
+
+      // Create the EIP-712 message for delegation signing
+      const domain = {
+        name: "MetaMask Delegation Toolkit",
+        version: "1",
+        chainId: currentChainIdDecimal, // Use the actual MetaMask chainId
+        verifyingContract: "0x0000000000000000000000000000000000000000", // Delegation manager address
+      };
+
+      // Properly structured delegation authorization message
+      const message = `ASSET NEST - Delegation Authorization
+
+I hereby authorize the AI Agent to trade on my behalf with the following parameters:
+
+DELEGATION DETAILS:
+• Agent Address: ${unsignedDelegation.delegate}
+• Smart Account: ${unsignedDelegation.delegator}
+• Delegation Salt: ${unsignedDelegation.salt}
+
+RESTRICTIONS:
+• Max Trade Amount: $${delegationParams.maxTradeAmount} USD per trade
+• Daily Trade Limit: ${delegationParams.maxTradesPerDay} trades per day
+• Risk Level: ${delegationParams.riskLevel.toUpperCase()}
+• Expiration: ${delegationParams.expirationDays} days from creation
+${
+  delegationParams.allowedTokens.length > 0
+    ? `• Allowed Tokens: ${delegationParams.allowedTokens.join(", ")}`
+    : "• All tokens allowed"
+}
+• Standard: ERC-7710 Delegation with Caveats
+
+By signing this message, I grant permission for the AI agent to execute trades within these restrictions.`;
+
+      console.log("Requesting signature for delegation authorization");
+
+      // Use simple personal signature instead of typed data (more reliable)
+      const signature = await window.ethereum.request({
+        method: "personal_sign",
+        params: [message, address],
+      });
+
+      console.log("Signature received:", signature);
+
+      // Step 3: Submit signed delegation
+      const finalResponse = await axios.post("/api/delegation/sign", {
+        delegation: unsignedDelegation,
+        signature,
       });
 
       setDelegationCreated(true);
-      setSuccess('Delegation created! Agent can now rebalance your portfolio.');
+      setDelegationTimestamp(Date.now());
+      activityLogger.success(
+        "DELEGATION",
+        "Delegation created! Agent is now authorized to trade."
+      );
+      setSuccess(
+        "Delegation signed and created! Agent can now trade from your wallet."
+      );
 
       // Auto-fetch portfolio
       await fetchPortfolio();
-      setStep('portfolio');
-
+      setStep("portfolio");
     } catch (err: any) {
-      console.error('Delegation creation error:', err);
-      if (err.message?.includes('User rejected')) {
-        setError('Signature rejected. Please approve in MetaMask to continue.');
+      console.error("Delegation creation error:", err);
+      activityLogger.error(
+        "DELEGATION",
+        "Failed to create delegation",
+        err.message
+      );
+
+      if (err.message?.includes("User rejected")) {
+        setError("Signature rejected. Please approve in MetaMask to continue.");
+      } else if (
+        err.message?.includes("chainId") ||
+        err.message?.includes("chain")
+      ) {
+        setError(
+          "Chain ID mismatch. Please ensure you're connected to Monad Testnet (Chain ID: 10143) and try again."
+        );
+      } else if (err.code === 4902) {
+        setError(
+          "Monad Testnet not found in wallet. Please add it manually or try the 'Add Network' button."
+        );
+      } else if (err.code === -32002) {
+        setError(
+          "Please check MetaMask - there may be a pending request waiting for approval."
+        );
       } else {
-        setError(err.response?.data?.error || err.message || 'Failed to create delegation');
+        setError(
+          err.response?.data?.details ||
+            err.response?.data?.error ||
+            err.message ||
+            "Failed to create delegation. Please check your wallet connection and network."
+        );
       }
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchPortfolio = async () => {
-    const targetAddr = smartAccountAddress || address;
+  const [portfolioCache, setPortfolioCache] = useState<{
+    address: string;
+    data: any;
+    timestamp: number;
+  } | null>(null);
+
+  const fetchPortfolio = async (forceRefresh = false) => {
+    // ALWAYS fetch from your wallet address (where your funds actually are)
+    // The smart account is just for delegation, funds stay in your wallet
+    const targetAddr = address; // Use wallet address, not smart account
     if (!targetAddr) return;
 
+    // Check cache (valid for 30 seconds)
+    const now = Date.now();
+    if (
+      !forceRefresh &&
+      portfolioCache &&
+      portfolioCache.address === targetAddr &&
+      now - portfolioCache.timestamp < 30000
+    ) {
+      console.log("Using cached portfolio data");
+      setHoldings(portfolioCache.data.holdings);
+      setTotalValueUSD(portfolioCache.data.totalValueUSD);
+      activityLogger.info("PORTFOLIO", "Loaded portfolio from cache");
+      return;
+    }
+
+    activityLogger.info(
+      "PORTFOLIO",
+      `Fetching portfolio for wallet: ${targetAddr}`
+    );
     setLoading(true);
-    setError('');
+    setError("");
     try {
-      const response = await axios.get(`/api/portfolio/balances?address=${targetAddr}`);
+      console.log("Fetching portfolio from wallet address:", targetAddr);
+      console.log(
+        "Smart account address (for delegation only):",
+        smartAccountAddress
+      );
+
+      // Always try to fetch ALL tokens using Monorail auto-discovery
+      const response = await axios.get(
+        `/api/portfolio/balances?address=${targetAddr}&source=monorail`
+      );
+
       setHoldings(response.data.holdings);
       setTotalValueUSD(response.data.totalValueUSD);
-      setSuccess('Portfolio loaded successfully');
+
+      // Cache the results
+      setPortfolioCache({
+        address: targetAddr,
+        data: {
+          holdings: response.data.holdings,
+          totalValueUSD: response.data.totalValueUSD,
+        },
+        timestamp: now,
+      });
+
+      // Create portfolio snapshot for indexing (Envio pattern)
+      await assetNestIndexer.createPortfolioSnapshot(targetAddr, {
+        totalValueUSD: response.data.totalValueUSD,
+        tokens: response.data.holdings.map((h: any) => ({
+          address: h.token,
+          symbol: h.symbol,
+          balance: h.balance,
+          valueUSD: h.valueUSD,
+          percentage: h.percentage,
+        })),
+      });
+
+      const tokenCount =
+        response.data.tokenCount || response.data.holdings?.length || 0;
+
+      activityLogger.success(
+        "PORTFOLIO",
+        `Loaded ${tokenCount} tokens worth ${formatUSD(
+          response.data.totalValueUSD
+        )} via ${response.data.source}`
+      );
+
+      addNotification(
+        "info",
+        "Portfolio Loaded",
+        `${tokenCount} tokens found in your wallet via ${
+          response.data.source || "API"
+        }`
+      );
+
+      console.log(
+        `Portfolio loaded with ${tokenCount} tokens from wallet:`,
+        response.data.holdings
+      );
     } catch (err: any) {
-      console.error('Portfolio fetch error:', err);
-      setError(err.response?.data?.error || 'Failed to fetch portfolio');
+      console.error("Portfolio fetch error:", err);
+      activityLogger.error(
+        "PORTFOLIO",
+        "Failed to fetch portfolio",
+        err.message
+      );
+      setError(err.response?.data?.error || "Failed to fetch portfolio");
     } finally {
       setLoading(false);
     }
@@ -251,35 +684,81 @@ export default function Home() {
 
   const handleComputeStrategy = async () => {
     if (holdings.length === 0) {
-      setError('No holdings found. Fund your wallet first.');
+      activityLogger.warning(
+        "REBALANCE",
+        "No holdings found - cannot compute strategy"
+      );
+      setError("No holdings found. Fund your wallet first.");
       return;
     }
 
-    const targetSum = targets.reduce((sum, t) => sum + t.targetPercentage, 0);
-    if (Math.abs(targetSum - 100) > 0.1) {
-      setError(`Targets must sum to 100%, got ${targetSum.toFixed(1)}%`);
-      return;
-    }
-
+    activityLogger.info("REBALANCE", "Getting AI portfolio analysis...");
     setLoading(true);
-    setError('');
+    setError("");
+
+    // Start AI analysis window
+    setAiAnalysis({ isAnalyzing: true, result: null, showWindow: true });
     try {
-      const response = await axios.post('/api/rebalance/strategy', {
+      const response = await axios.post("/api/rebalance/strategy", {
         holdings: holdings.map((h) => ({
           token: h.token,
           symbol: h.symbol,
+          name: h.name,
           balance: h.balance,
           valueUSD: h.valueUSD,
+          price: h.price,
+          decimals: h.decimals,
+          // Include full Monorail data
+          pconf: h.pconf,
+          categories: h.categories,
+          logo: h.logo,
+          monValue: h.monValue,
+          monPerToken: h.monPerToken,
         })),
-        targets,
+        // No targets - let AI decide optimal allocation
+        autoAllocate: true,
       });
 
       setStrategy(response.data.strategy);
-      setSuccess(`AI computed ${response.data.strategy.trades.length} trades`);
-      setStep('rebalance');
+
+      // Update AI analysis with results
+      setAiAnalysis({
+        isAnalyzing: false,
+        result: response.data.strategy,
+        showWindow: true,
+      });
+
+      activityLogger.success(
+        "REBALANCE",
+        `AI analyzed portfolio and suggested ${response.data.strategy.trades.length} trades`
+      );
+      if (response.data.strategy.trades.length === 0) {
+        addNotification(
+          "info",
+          "Portfolio Optimal",
+          "AI analysis found your portfolio is already well-balanced. No trades needed."
+        );
+      } else {
+        setSuccess(
+          `AI suggested ${response.data.strategy.trades.length} optimal trades`
+        );
+      }
+      setStep("rebalance");
     } catch (err: any) {
-      console.error('Strategy error:', err);
-      setError(err.response?.data?.error || 'Failed to compute strategy');
+      console.error("Strategy error:", err);
+      activityLogger.error(
+        "REBALANCE",
+        "Failed to get AI analysis",
+        err.message
+      );
+      setError(err.response?.data?.error || "Failed to get AI analysis");
+
+      // Update AI analysis with error
+      setAiAnalysis({
+        isAnalyzing: false,
+        result: null,
+        showWindow: false,
+      });
     } finally {
       setLoading(false);
     }
@@ -288,24 +767,40 @@ export default function Home() {
   const handleExecuteRebalance = async () => {
     if (!strategy || !address) return;
 
+    activityLogger.info(
+      "EXECUTE",
+      `Executing ${strategy.trades.length} trades via Monorail...`
+    );
     setLoading(true);
-    setError('');
+    setError("");
     try {
-      const demoPrivateKey = `0x${address.slice(2).padStart(64, '0')}`;
+      const demoPrivateKey = `0x${address.slice(2).padStart(64, "0")}`;
 
-      const response = await axios.post('/api/rebalance/execute', {
+      const response = await axios.post("/api/rebalance/execute", {
         trades: strategy.trades,
         smartAccountPrivateKey: demoPrivateKey,
       });
 
+      activityLogger.success(
+        "EXECUTE",
+        `Rebalancing executed! TX Hash: ${response.data.userOpHash}`
+      );
       setSuccess(`Executed! TX: ${response.data.userOpHash.slice(0, 10)}...`);
 
       // Refresh portfolio
       await fetchPortfolio();
-
     } catch (err: any) {
-      console.error('Execution error:', err);
-      setError(err.response?.data?.details || err.response?.data?.error || 'Execution failed');
+      console.error("Execution error:", err);
+      activityLogger.error(
+        "EXECUTE",
+        "Failed to execute rebalancing",
+        err.response?.data?.details || err.message
+      );
+      setError(
+        err.response?.data?.details ||
+          err.response?.data?.error ||
+          "Execution failed"
+      );
     } finally {
       setLoading(false);
     }
@@ -313,18 +808,219 @@ export default function Home() {
 
   const updateTarget = (symbol: string, value: number) => {
     setTargets((prev) =>
-      prev.map((t) => (t.symbol === symbol ? { ...t, targetPercentage: value } : t))
+      prev.map((t) =>
+        t.symbol === symbol ? { ...t, targetPercentage: value } : t
+      )
     );
   };
 
-  // Smart decimal formatting: 3 decimals for values >= 1, 5 decimals for values < 1
-  const formatValue = (value: number): string => {
-    if (value >= 1) {
-      return value.toFixed(3);
-    } else {
-      return value.toFixed(5);
+  // Load all available tokens for swapping
+  const loadAllTokens = async () => {
+    if (!address) return;
+
+    setSwapState((prev) => ({ ...prev, loadingTokens: true }));
+    try {
+      const response = await axios.get(
+        `/api/portfolio/discover-tokens?address=${address}`
+      );
+
+      activityLogger.success(
+        "SWAP",
+        `Loaded ${response.data.tokenCount} tokens for swapping (${response.data.userHoldingsCount} in your wallet)`
+      );
+
+      setSwapState((prev) => ({
+        ...prev,
+        allTokens: response.data.tokens,
+        loadingTokens: false,
+      }));
+    } catch (err: any) {
+      console.error("Failed to load tokens:", err);
+      activityLogger.error("SWAP", "Failed to load token list", err.message);
+      setSwapState((prev) => ({
+        ...prev,
+        allTokens: holdings, // Fallback to user holdings only
+        loadingTokens: false,
+      }));
     }
   };
+
+  // Load tokens when entering swap page
+  useEffect(() => {
+    if (step === "swap" && address && swapState.allTokens.length === 0) {
+      loadAllTokens();
+    }
+  }, [step, address]);
+
+  // Swap handlers
+  const fetchSwapQuote = async (
+    fromToken: string,
+    toToken: string,
+    amount: string
+  ) => {
+    if (!fromToken || !toToken || !amount || parseFloat(amount) <= 0) return;
+
+    setSwapState((prev) => ({ ...prev, loadingQuote: true }));
+    try {
+      const response = await axios.get(
+        `/api/swap/quote?fromToken=${fromToken}&toToken=${toToken}&amount=${amount}&slippage=${swapState.slippage}`
+      );
+
+      // Get token decimals for proper formatting
+      const toTokenData = swapState.allTokens.find(
+        (t: any) => t.address === toToken
+      );
+      const toTokenDecimals = toTokenData?.decimals || 18;
+
+      // Format the amount from wei to human-readable
+      const formattedToAmount = formatTokenAmount(
+        response.data.toAmount || "0",
+        toTokenDecimals
+      );
+
+      setSwapState((prev) => ({
+        ...prev,
+        quote: response.data.quote,
+        toAmount: formattedToAmount,
+        loadingQuote: false,
+      }));
+    } catch (err: any) {
+      console.error("Quote fetch error:", err);
+      setError(err.response?.data?.error || "Failed to fetch quote");
+      setSwapState((prev) => ({ ...prev, loadingQuote: false }));
+    }
+  };
+
+  const handleExecuteSwap = async () => {
+    if (
+      !address ||
+      !swapState.fromToken ||
+      !swapState.toToken ||
+      !swapState.fromAmount
+    ) {
+      setError("Please select tokens and enter amount");
+      return;
+    }
+
+    activityLogger.info("SWAP", `Swapping ${swapState.fromAmount} tokens...`);
+    setLoading(true);
+    setError("");
+    try {
+      const response = await axios.post("/api/swap/execute", {
+        fromToken: swapState.fromToken,
+        toToken: swapState.toToken,
+        amount: swapState.fromAmount,
+        fromAddress: address,
+        slippage: swapState.slippage,
+      });
+
+      const fromTokenSymbol =
+        swapState.allTokens.find((t: any) => t.address === swapState.fromToken)
+          ?.symbol || "Unknown";
+      const toTokenSymbol =
+        swapState.allTokens.find((t: any) => t.address === swapState.toToken)
+          ?.symbol || "Unknown";
+
+      const txHash = response.data.txHash || response.data.hash || "unknown";
+
+      activityLogger.success(
+        "SWAP",
+        `Swap executed! ${swapState.fromAmount} ${fromTokenSymbol} → ${swapState.toAmount} ${toTokenSymbol}`,
+        `TX: ${txHash}`
+      );
+
+      // Index transaction with enhanced indexer (Envio pattern)
+      if (txHash !== "unknown") {
+        await assetNestIndexer.indexTransaction({
+          hash: txHash,
+          from: address || "",
+          to: swapState.toToken,
+          type: "swap",
+          status: "success",
+          metadata: {
+            tokens: {
+              fromToken: swapState.fromToken,
+              toToken: swapState.toToken,
+              fromSymbol: fromTokenSymbol,
+              toSymbol: toTokenSymbol,
+              fromAmount: swapState.fromAmount,
+              toAmount: swapState.toAmount,
+            },
+          },
+        });
+      }
+
+      addNotification(
+        "info",
+        "Swap Executed",
+        `${swapState.fromAmount} ${fromTokenSymbol} → ${
+          swapState.toAmount
+        } ${toTokenSymbol}${
+          txHash !== "unknown" ? ` | TX: ${txHash.slice(0, 10)}...` : ""
+        }`
+      );
+
+      // Refresh portfolio
+      await fetchPortfolio();
+
+      // Reset swap form
+      setSwapState({
+        fromToken: "",
+        toToken: "",
+        fromAmount: "",
+        toAmount: "",
+        slippage: "0.5",
+        deadline: "10",
+        priority: "normal",
+        quote: null,
+        loadingQuote: false,
+        allTokens: swapState.allTokens, // Keep token list after swap
+        loadingTokens: false,
+      });
+    } catch (err: any) {
+      console.error("Swap execution error:", err);
+      activityLogger.error(
+        "SWAP",
+        "Failed to execute swap",
+        err.response?.data?.details || err.message
+      );
+
+      // Use notification instead of error state
+      addNotification(
+        "error",
+        "Swap Failed",
+        err.response?.data?.details ||
+          err.response?.data?.error ||
+          err.message ||
+          "Swap execution failed"
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Auto-fetch quote when inputs change
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (swapState.fromToken && swapState.toToken && swapState.fromAmount) {
+        fetchSwapQuote(
+          swapState.fromToken,
+          swapState.toToken,
+          swapState.fromAmount
+        );
+      }
+    }, 500); // Debounce 500ms
+
+    return () => clearTimeout(timer);
+  }, [
+    swapState.fromToken,
+    swapState.toToken,
+    swapState.fromAmount,
+    swapState.slippage,
+  ]);
+
+  // Use our improved formatting functions instead of the basic formatValue
+  // These handle large numbers, scientific notation, and proper decimal places
 
   if (!mounted) {
     return null; // Prevent hydration mismatch
@@ -346,49 +1042,136 @@ export default function Home() {
         <div className="card vscode-success fade-in">
           <div className="flex items-center">
             <span className="status-dot status-success"></span>
-            <span className="text-gray-900 font-bold">{success}</span>
+            <span className="text-white font-bold">{success}</span>
           </div>
         </div>
       )}
+
+      {/* Notification Bars */}
+      <div className="fixed top-20 right-4 space-y-2 z-50 max-w-md">
+        {notifications.map((notification) => (
+          <div
+            key={notification.id}
+            className={`p-4 rounded-lg border-2 shadow-lg backdrop-blur-sm transition-all duration-300 fade-in ${
+              notification.type === "error"
+                ? "bg-red-500/20 border-red-500 shadow-red-500/30"
+                : notification.type === "warning"
+                ? "bg-yellow-500/20 border-yellow-500 shadow-yellow-500/30"
+                : "bg-green-500/20 border-green-500 shadow-green-500/30"
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1">
+                <h4
+                  className={`font-bold font-mono text-sm ${
+                    notification.type === "error"
+                      ? "text-red-500"
+                      : notification.type === "warning"
+                      ? "text-yellow-500"
+                      : "text-green-500"
+                  }`}
+                >
+                  {notification.title}
+                </h4>
+                <p className="text-white text-sm mt-1 font-mono">
+                  {notification.message}
+                </p>
+              </div>
+              <button
+                onClick={() => removeNotification(notification.id)}
+                className={`text-gray-300 hover:text-white transition-colors text-lg font-bold ${
+                  notification.type === "error"
+                    ? "hover:text-red-500"
+                    : notification.type === "warning"
+                    ? "hover:text-yellow-500"
+                    : "hover:text-green-500"
+                }`}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
 
       {/* Hero Landing Page */}
       {showHero && (
         <div className="min-h-[80vh] flex items-center justify-center fade-in">
           <div className="max-w-4xl mx-auto text-center space-y-8">
-            {/* Title */}
+            {/* Logo & Title */}
             <div className="space-y-4">
-              <h1 className="text-7xl font-bold neon-text mb-4" style={{ textShadow: '0 0 20px rgba(0,255,247,0.8), 0 0 40px rgba(0,255,247,0.5)' }}>
+              <div className="flex justify-center mb-6">
+                <img
+                  src="/assetnestfinal.png"
+                  alt="Asset Nest Logo"
+                  className="h-24 w-auto"
+                />
+              </div>
+              <h1
+                className="text-7xl font-bold neon-text mb-4"
+                style={{
+                  textShadow:
+                    "0 0 20px rgba(0,255,247,0.8), 0 0 40px rgba(0,255,247,0.5)",
+                }}
+              >
                 ASSET NEST
               </h1>
               <p className="text-3xl font-bold text-white mb-2">
                 AI-Powered Portfolio Rebalancer
               </p>
               <p className="text-xl text-gray-300">
-                Autonomous portfolio management on Monad using MetaMask Smart Accounts
+                Autonomous portfolio management on Monad using MetaMask Smart
+                Accounts
               </p>
             </div>
 
             {/* Features Grid */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12 mb-12">
               <div className="bg-black border-2 border-cyan-400 rounded-lg p-6 shadow-[0_0_20px_rgba(0,255,247,0.3)]">
-                <div className="text-4xl mb-3">🤖</div>
-                <h3 className="text-xl font-bold text-cyan-400 mb-2">AI Agent</h3>
+                <div className="mb-3 flex justify-center">
+                  <img src="/agent.png" alt="AI Agent" className="w-12 h-12" />
+                </div>
+                <h3 className="text-xl font-bold text-cyan-400 mb-2">
+                  AI Agent
+                </h3>
                 <p className="text-gray-300 text-sm">
-                  Intelligent rebalancing strategies powered by advanced AI algorithms
+                  Intelligent rebalancing strategies powered by advanced AI
+                  algorithms
+                </p>
+              </div>
+
+              <div className="bg-black border-2 border-orange-400 rounded-lg p-6 shadow-[0_0_20px_rgba(251,146,60,0.3)]">
+                <div className="mb-3 flex justify-center">
+                  <img
+                    src="/MetaMask-icon-fox-developer.svg"
+                    alt="MetaMask"
+                    className="w-12 h-12"
+                  />
+                </div>
+                <h3 className="text-xl font-bold text-orange-400 mb-2">
+                  Smart Accounts
+                </h3>
+                <p className="text-gray-300 text-sm">
+                  Gasless transactions with MetaMask Delegation Toolkit
+                  (ERC-4337)
                 </p>
               </div>
 
               <div className="bg-black border-2 border-purple-400 rounded-lg p-6 shadow-[0_0_20px_rgba(191,0,255,0.3)]">
-                <div className="text-4xl mb-3">⚡</div>
-                <h3 className="text-xl font-bold text-purple-400 mb-2">Smart Accounts</h3>
-                <p className="text-gray-300 text-sm">
-                  Gasless transactions with MetaMask Delegation Toolkit (ERC-4337)
-                </p>
-              </div>
-
-              <div className="bg-black border-2 border-green-400 rounded-lg p-6 shadow-[0_0_20px_rgba(57,255,20,0.3)]">
-                <div className="text-4xl mb-3">🚀</div>
-                <h3 className="text-xl font-bold text-green-400 mb-2">Monad L1</h3>
+                <div className="mb-3 flex justify-center">
+                  <img
+                    src="/66c3711574e166ac115bba8a_Logo Mark.svg"
+                    alt="Monad Logo"
+                    className="w-12 h-12 filter brightness-0 invert"
+                    style={{
+                      filter:
+                        "brightness(0) saturate(100%) invert(56%) sepia(94%) saturate(6738%) hue-rotate(266deg) brightness(101%) contrast(101%)",
+                    }}
+                  />
+                </div>
+                <h3 className="text-xl font-bold text-purple-400 mb-2">
+                  Monad L1
+                </h3>
                 <p className="text-gray-300 text-sm">
                   Built on Monad's high-performance blockchain infrastructure
                 </p>
@@ -400,7 +1183,7 @@ export default function Home() {
               <button
                 onClick={() => setShowHero(false)}
                 className="btn btn-primary text-2xl px-12 py-6"
-                style={{ boxShadow: '0 0 40px rgba(0,255,247,0.6)' }}
+                style={{ boxShadow: "0 0 40px rgba(0,255,247,0.6)" }}
               >
                 LAUNCH APP →
               </button>
@@ -414,440 +1197,1800 @@ export default function Home() {
         </div>
       )}
 
-      {/* Step Indicator */}
+      {/* Header with Logo */}
+      {!showHero && (
+        <div className="card mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <img
+                src="/assetnestfinal.png"
+                alt="Asset Nest"
+                className="h-12 w-auto"
+              />
+              <div>
+                <h1 className="text-2xl font-bold neon-text">ASSET NEST</h1>
+                <p className="text-xs text-gray-400">AI Portfolio Rebalancer</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {/* Chain Status */}
+              <div className="flex items-center gap-2 bg-black border-2 border-green-400/50 px-3 py-2 rounded-lg">
+                <div
+                  className={`w-2 h-2 rounded-full ${
+                    chainId === 10143 ? "bg-green-400" : "bg-red-400"
+                  } animate-pulse`}
+                ></div>
+                <div>
+                  <div className="text-sm font-bold text-white">
+                    <img
+                      src="/66c3711574e166ac115bba8a_Logo Mark.svg"
+                      alt="Monad"
+                      className="w-4 h-4 inline mr-2 filter brightness-0 invert"
+                    />
+                    Monad Testnet
+                  </div>
+                  <div className="text-xs font-mono text-cyan-400">
+                    Chain ID: 10143
+                  </div>
+                </div>
+              </div>
+
+              {/* Wallet Info - Enhanced */}
+              {isConnected && address ? (
+                <div className="flex items-center gap-3 bg-black border-2 border-purple-400/50 px-4 py-2 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></div>
+                    <span className="text-xs text-gray-400 uppercase font-mono">
+                      WALLET
+                    </span>
+                  </div>
+                  <code className="text-sm font-mono text-purple-400 font-bold">
+                    {address.slice(0, 8)}...{address.slice(-6)}
+                  </code>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => navigator.clipboard.writeText(address)}
+                      className="text-purple-400 hover:text-purple-300 transition-colors p-1 hover:bg-purple-400/10 rounded"
+                      title="Copy Address"
+                    >
+                      📋
+                    </button>
+                    <button
+                      onClick={handleDisconnect}
+                      className="text-red-400 hover:text-red-300 transition-colors p-1 hover:bg-red-400/10 rounded font-bold"
+                      title="Disconnect Wallet"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  {connectors.map((connector) => (
+                    <button
+                      key={connector.id}
+                      onClick={() => connect({ connector })}
+                      disabled={loading}
+                      className="bg-black border-2 border-cyan-400/50 px-4 py-2 rounded-lg text-cyan-400 hover:border-cyan-400 hover:shadow-[0_0_20px_rgba(0,255,247,0.3)] transition-all font-bold text-sm disabled:opacity-50"
+                    >
+                      {loading
+                        ? "CONNECTING..."
+                        : `CONNECT ${connector.name.toUpperCase()}`}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Navigation Bar */}
       {!showHero && (
         <>
           <div className="card">
-            <div className="grid grid-cols-4 gap-2">
-              {['connect', 'setup', 'portfolio', 'rebalance'].map((s, i) => (
-                <div
-                  key={s}
-                  className={`text-center py-2 px-1 rounded-lg text-sm font-bold uppercase ${
-                    step === s
-                      ? 'bg-black border-2 border-cyan-400 text-cyan-400 shadow-[0_0_20px_rgba(0,255,247,0.5)]'
-                      : 'bg-black border border-gray-700 text-gray-500'
+            <div className="space-y-4">
+              {/* Main Navigation Steps */}
+              <div className="grid grid-cols-4 gap-2">
+                {["delegation", "portfolio", "rebalance", "swap"].map((s) => {
+                  const stepName = s as
+                    | "delegation"
+                    | "portfolio"
+                    | "rebalance"
+                    | "swap";
+                  const canNavigate =
+                    (stepName === "delegation" && isConnected) ||
+                    (stepName === "portfolio" &&
+                      isConnected &&
+                      smartAccountAddress) ||
+                    (stepName === "rebalance" && holdings.length > 0) ||
+                    (stepName === "swap" && holdings.length > 0);
+                  return (
+                    <button
+                      key={s}
+                      onClick={() => canNavigate && setStep(stepName)}
+                      disabled={!canNavigate}
+                      className={`text-center py-2 px-1 rounded-lg text-sm font-bold uppercase transition-all ${
+                        step === s
+                          ? "bg-black border-2 border-cyan-400 text-cyan-400 shadow-[0_0_20px_rgba(0,255,247,0.5)]"
+                          : canNavigate
+                          ? "bg-black border border-cyan-400/50 text-cyan-400/70 hover:border-cyan-400 hover:text-cyan-400 cursor-pointer"
+                          : "bg-black border border-gray-700 text-gray-500 cursor-not-allowed"
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Utility Navigation */}
+              <div className="flex gap-2 border-t-2 border-cyan-400/30 pt-4">
+                <button
+                  onClick={() => setStep("logs")}
+                  className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold uppercase transition-all ${
+                    step === "logs"
+                      ? "bg-purple-500/20 border-2 border-purple-400 text-purple-400"
+                      : "bg-black border border-purple-400/50 text-purple-400/70 hover:border-purple-400 hover:text-purple-400"
                   }`}
                 >
-                  {i + 1}. {s}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Connect Wallet */}
-      {step === 'connect' && !isConnected && (
-        <div className="card fade-in text-center">
-          <h2 className="text-4xl font-bold mb-4 neon-text">
-            ASSET NEST
-          </h2>
-          <p className="text-xl mb-2">AI PORTFOLIO REBALANCER</p>
-          <p className="mb-6 text-gray-400">
-            Connect MetaMask on Monad Testnet
-          </p>
-          <div className="space-y-4">
-            {connectors.map((connector) => (
-              <button
-                key={connector.id}
-                onClick={() => connect({ connector })}
-                disabled={loading}
-                className="btn btn-primary w-full max-w-md mx-auto block text-lg"
-              >
-                {loading ? 'CONNECTING...' : `CONNECT ${connector.name.toUpperCase()}`}
-              </button>
-            ))}
-          </div>
-          <p className="mt-6 text-sm text-gray-500">
-            Chain ID: 10143 | Monad Testnet
-          </p>
-        </div>
-      )}
-
-      {/* Connected Wallet Info */}
-      {isConnected && address && (
-        <div className="card fade-in">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-gray-400 uppercase">Connected Wallet</div>
-              <div className="mono font-bold text-2xl neon-text">
-                {address.slice(0, 10)}...{address.slice(-8)}
-              </div>
-            </div>
-            <button onClick={handleDisconnect} className="btn btn-secondary">
-              DISCONNECT
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Setup Smart Account & Delegation */}
-      {step === 'setup' && isConnected && (
-        <div className="card fade-in">
-          <h2 className="text-3xl font-bold mb-6 neon-text">
-            SETUP SMART ACCOUNT
-          </h2>
-          <div className="space-y-6">
-            {!smartAccountAddress ? (
-              <div>
-                <p className="mb-4 text-gray-300">
-                  Create a MetaMask Smart Account with ERC-4337 capabilities
-                </p>
-                <button
-                  onClick={handleCreateSmartAccount}
-                  disabled={loading}
-                  className="btn btn-primary w-full text-lg"
-                >
-                  {loading ? 'CREATING...' : 'CREATE SMART ACCOUNT'}
+                  ACTIVITY LOGS
                 </button>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400">
-                  <div className="text-sm text-gray-400">Smart Account Address</div>
-                  <div className="mono text-cyan-400 font-bold">
-                    {smartAccountAddress.slice(0, 20)}...{smartAccountAddress.slice(-18)}
-                  </div>
-                </div>
-
-                {agentAddress && (
-                  <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-purple-400">
-                    <div className="text-sm text-gray-400">AI Agent Address</div>
-                    <div className="mono text-purple-400 font-bold">
-                      {agentAddress.slice(0, 20)}...{agentAddress.slice(-18)}
-                    </div>
-                  </div>
+                {delegationCreated && (
+                  <button
+                    onClick={() => setShowRevokeModal(true)}
+                    disabled={loading}
+                    className="flex-1 py-2 px-3 rounded-lg text-xs font-bold uppercase bg-black border border-red-400/50 text-red-400/70 hover:border-red-400 hover:text-red-400 transition-all disabled:opacity-50"
+                  >
+                    REVOKE DELEGATION
+                  </button>
                 )}
+                {isConnected && (
+                  <button
+                    onClick={() => setStep("delegation")}
+                    className="flex-1 py-2 px-3 rounded-lg text-xs font-bold uppercase bg-black border border-cyan-400/50 text-cyan-400/70 hover:border-cyan-400 hover:text-cyan-400 transition-all"
+                  >
+                    SETTINGS
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
 
-                {!delegationCreated ? (
-                  <div className="space-y-4">
-                    <div className="p-6 bg-black rounded-lg border-2 border-green-400 shadow-[0_0_30px_rgba(57,255,20,0.3)]">
-                      <h3 className="text-xl font-bold mb-4 text-green-400">
-                        DELEGATION PERMISSIONS
-                      </h3>
-
-                      <div className="space-y-3">
-                        <div className="flex items-start gap-3">
-                          <div className="text-green-400 text-xl">✓</div>
-                          <div>
-                            <div className="font-bold text-white">Execute Trades</div>
-                            <div className="text-sm text-gray-400">
-                              Agent can swap tokens on your behalf using Monorail
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-start gap-3">
-                          <div className="text-green-400 text-xl">✓</div>
-                          <div>
-                            <div className="font-bold text-white">Rebalance Portfolio</div>
-                            <div className="text-sm text-gray-400">
-                              Agent can adjust your token allocations to match target percentages
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-start gap-3">
-                          <div className="text-green-400 text-xl">✓</div>
-                          <div>
-                            <div className="font-bold text-white">Gasless Transactions</div>
-                            <div className="text-sm text-gray-400">
-                              Execute trades without paying gas fees (ERC-4337)
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="mt-6 pt-4 border-t-2 border-green-400/30">
-                        <h4 className="font-bold text-yellow-400 mb-2">RESTRICTIONS</h4>
-                        <div className="space-y-2 text-sm">
-                          <div className="flex items-start gap-2">
-                            <span className="text-yellow-400">⚠</span>
-                            <span className="text-gray-300">
-                              <span className="font-bold">Type:</span> Open Delegation (Unrestricted)
-                            </span>
-                          </div>
-                          <div className="flex items-start gap-2">
-                            <span className="text-yellow-400">⚠</span>
-                            <span className="text-gray-300">
-                              <span className="font-bold">Delegate:</span> {agentAddress.slice(0, 10)}...{agentAddress.slice(-8)}
-                            </span>
-                          </div>
-                          <div className="flex items-start gap-2">
-                            <span className="text-yellow-400">⚠</span>
-                            <span className="text-gray-300">
-                              <span className="font-bold">Expiration:</span> No expiration (revocable anytime)
-                            </span>
-                          </div>
-                          <div className="flex items-start gap-2">
-                            <span className="text-cyan-400">ℹ</span>
-                            <span className="text-gray-300">
-                              <span className="font-bold">Standard:</span> ERC-7710 Delegation
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="p-4 bg-black rounded-lg border-2 border-purple-400/50">
-                      <p className="text-sm text-gray-300">
-                        <span className="font-bold text-purple-400">Note:</span> You will be prompted to sign this delegation in MetaMask.
-                        This creates a cryptographic signature proving you authorize the AI agent to trade on your behalf.
-                      </p>
-                    </div>
-
+          {/* Setup Smart Account & Delegation */}
+          {step === "delegation" && isConnected && (
+            <div className="card fade-in">
+              <h2 className="text-3xl font-bold mb-6 neon-text">
+                DELEGATION SETUP
+              </h2>
+              <div className="space-y-6">
+                {!smartAccountAddress ? (
+                  <div>
+                    <p className="mb-4 text-gray-300">
+                      Create a MetaMask Smart Account with ERC-4337 capabilities
+                    </p>
                     <button
-                      onClick={handleCreateDelegation}
-                      disabled={loading}
-                      className="btn btn-success w-full text-lg"
+                      onClick={handleCreateSmartAccount}
+                      disabled={loading || chainId !== 10143}
+                      className="btn btn-primary w-full text-lg"
                     >
-                      {loading ? 'WAITING FOR SIGNATURE...' : 'SIGN DELEGATION IN METAMASK'}
+                      {chainId !== 10143
+                        ? "SWITCH TO MONAD TESTNET FIRST"
+                        : loading
+                        ? "CREATING..."
+                        : "CREATE SMART ACCOUNT"}
                     </button>
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    <div className="p-6 bg-black rounded-lg border-2 border-green-400 shadow-[0_0_30px_rgba(57,255,20,0.3)]">
-                      <div className="flex items-center gap-3 mb-4">
-                        <div className="text-green-400 text-3xl">✓</div>
-                        <div>
-                          <h3 className="text-xl font-bold text-green-400">
-                            DELEGATION ACTIVE
+                    <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400">
+                      <div className="text-sm text-gray-400 uppercase mb-2">
+                        Smart Account Address
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <code className="mono text-cyan-400 font-bold text-sm break-all">
+                          {smartAccountAddress}
+                        </code>
+                        <CopyButton
+                          text={smartAccountAddress}
+                          displayText="COPY"
+                        />
+                      </div>
+                    </div>
+
+                    {agentAddress && (
+                      <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-purple-400">
+                        <div className="text-sm text-gray-400 uppercase mb-2">
+                          AI Agent Address
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <code className="mono text-purple-400 font-bold text-sm break-all">
+                            {agentAddress}
+                          </code>
+                          <CopyButton text={agentAddress} displayText="COPY" />
+                        </div>
+                      </div>
+                    )}
+
+                    {!delegationCreated ? (
+                      <div className="space-y-4">
+                        <div className="p-6 bg-black rounded-lg border-2 border-green-400 shadow-[0_0_30px_rgba(57,255,20,0.3)]">
+                          <h3 className="text-xl font-bold mb-4 text-green-400">
+                            DELEGATION PERMISSIONS
                           </h3>
+
+                          <div className="space-y-3">
+                            <div className="flex items-start gap-3">
+                              <div className="w-2 h-2 bg-green-400 rounded-full mt-2"></div>
+                              <div>
+                                <div className="font-bold text-white">
+                                  Execute Trades
+                                </div>
+                                <div className="text-sm text-gray-400">
+                                  Agent can swap tokens on your behalf using
+                                  Monorail
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-start gap-3">
+                              <div className="w-2 h-2 bg-green-400 rounded-full mt-2"></div>
+                              <div>
+                                <div className="font-bold text-white">
+                                  Rebalance Portfolio
+                                </div>
+                                <div className="text-sm text-gray-400">
+                                  Agent can adjust your token allocations to
+                                  match target percentages
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-start gap-3">
+                              <div className="w-2 h-2 bg-green-400 rounded-full mt-2"></div>
+                              <div>
+                                <div className="font-bold text-white">
+                                  Gasless Transactions
+                                </div>
+                                <div className="text-sm text-gray-400">
+                                  Execute trades without paying gas fees
+                                  (ERC-4337)
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-6 pt-4 border-t-2 border-green-400/30">
+                            <h4 className="font-bold text-yellow-400 mb-4 text-lg">
+                              CONFIGURED RESTRICTIONS
+                            </h4>
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="p-3 bg-gray-800/50 rounded-lg border border-green-400/30">
+                                  <div className="text-xs text-gray-400 uppercase mb-1">
+                                    Max Trade Amount
+                                  </div>
+                                  <div className="text-lg font-bold text-green-400">
+                                    ${delegationParams.maxTradeAmount} per trade
+                                  </div>
+                                </div>
+                                <div className="p-3 bg-gray-800/50 rounded-lg border border-blue-400/30">
+                                  <div className="text-xs text-gray-400 uppercase mb-1">
+                                    Daily Trade Limit
+                                  </div>
+                                  <div className="text-lg font-bold text-blue-400">
+                                    {delegationParams.maxTradesPerDay}{" "}
+                                    trades/day
+                                  </div>
+                                </div>
+                                <div className="p-3 bg-gray-800/50 rounded-lg border border-purple-400/30">
+                                  <div className="text-xs text-gray-400 uppercase mb-1">
+                                    Risk Level
+                                  </div>
+                                  <div className="text-lg font-bold text-purple-400 capitalize">
+                                    {delegationParams.riskLevel}
+                                  </div>
+                                </div>
+                                <div className="p-3 bg-gray-800/50 rounded-lg border border-orange-400/30">
+                                  <div className="text-xs text-gray-400 uppercase mb-1">
+                                    Expiration
+                                  </div>
+                                  <div className="text-lg font-bold text-orange-400">
+                                    {delegationParams.expirationDays} days
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="p-3 bg-gray-800/50 rounded-lg border border-red-400/30">
+                                <div className="text-xs text-gray-400 uppercase mb-2">
+                                  Allowed Tokens
+                                </div>
+                                <div className="text-sm font-bold text-red-400">
+                                  {delegationParams.allowedTokens.length > 0
+                                    ? delegationParams.allowedTokens.join(", ")
+                                    : "All tokens allowed"}
+                                </div>
+                              </div>
+
+                              <div className="p-3 bg-gray-800/50 rounded-lg border border-cyan-400/30">
+                                <div className="text-xs text-gray-400 uppercase mb-2">
+                                  Standard
+                                </div>
+                                <div className="text-sm font-bold text-cyan-400">
+                                  ERC-7710 Delegation with Caveats
+                                </div>
+                              </div>
+
+                              <div className="p-3 bg-gray-800/50 rounded-lg border border-yellow-400/30">
+                                <div className="text-xs text-gray-400 uppercase mb-2">
+                                  Delegate Address
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <code className="text-xs font-mono text-yellow-400 break-all">
+                                    {agentAddress}
+                                  </code>
+                                  <CopyButton
+                                    text={agentAddress}
+                                    displayText="COPY"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Delegation Configuration */}
+                        <div className="p-4 bg-black rounded-lg border-2 border-blue-400/50">
+                          <h4 className="font-bold text-blue-400 mb-4">
+                            DELEGATION SETTINGS
+                          </h4>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">
+                                Max Trade Amount (USD)
+                              </label>
+                              <input
+                                type="number"
+                                value={delegationParams.maxTradeAmount}
+                                onChange={(e) =>
+                                  setDelegationParams((prev) => ({
+                                    ...prev,
+                                    maxTradeAmount:
+                                      parseInt(e.target.value) || 0,
+                                  }))
+                                }
+                                className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
+                                min="1"
+                                max="10000"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">
+                                Max Trades Per Day
+                              </label>
+                              <input
+                                type="number"
+                                value={delegationParams.maxTradesPerDay}
+                                onChange={(e) =>
+                                  setDelegationParams((prev) => ({
+                                    ...prev,
+                                    maxTradesPerDay:
+                                      parseInt(e.target.value) || 0,
+                                  }))
+                                }
+                                className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
+                                min="1"
+                                max="100"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">
+                                Risk Level
+                              </label>
+                              <select
+                                value={delegationParams.riskLevel}
+                                onChange={(e) =>
+                                  setDelegationParams((prev) => ({
+                                    ...prev,
+                                    riskLevel: e.target.value as
+                                      | "low"
+                                      | "medium"
+                                      | "high",
+                                  }))
+                                }
+                                className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
+                              >
+                                <option value="low">Low Risk</option>
+                                <option value="medium">Medium Risk</option>
+                                <option value="high">High Risk</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-400 mb-2">
+                                Expiration (Days)
+                              </label>
+                              <input
+                                type="number"
+                                value={delegationParams.expirationDays}
+                                onChange={(e) =>
+                                  setDelegationParams((prev) => ({
+                                    ...prev,
+                                    expirationDays:
+                                      parseInt(e.target.value) || 0,
+                                  }))
+                                }
+                                className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
+                                min="1"
+                                max="365"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-4">
+                            <label className="block text-sm text-gray-400 mb-2">
+                              Token Restrictions
+                            </label>
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-3 mb-3">
+                                <input
+                                  type="checkbox"
+                                  id="restrictTokens"
+                                  checked={
+                                    delegationParams.allowedTokens.length > 0
+                                  }
+                                  onChange={(e) =>
+                                    setDelegationParams((prev) => ({
+                                      ...prev,
+                                      allowedTokens: e.target.checked
+                                        ? ["MON", "USDC", "USDT", "WETH"]
+                                        : [],
+                                    }))
+                                  }
+                                  className="w-4 h-4 text-red-400 bg-gray-800 border-gray-600 rounded focus:ring-red-400 focus:ring-2"
+                                />
+                                <label
+                                  htmlFor="restrictTokens"
+                                  className="text-sm text-white cursor-pointer"
+                                >
+                                  Enable token restrictions (only allow specific
+                                  tokens)
+                                </label>
+                              </div>
+
+                              {delegationParams.allowedTokens.length > 0 && (
+                                <>
+                                  <div className="text-xs text-yellow-400 mb-2">
+                                    WARNING: AI will ONLY be able to trade these
+                                    tokens:
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    {[
+                                      "MON",
+                                      "USDC",
+                                      "USDT",
+                                      "WETH",
+                                      "BTC",
+                                      "ETH",
+                                    ].map((token) => (
+                                      <label
+                                        key={token}
+                                        className="flex items-center gap-2 p-2 bg-gray-800/50 rounded"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={delegationParams.allowedTokens.includes(
+                                            token
+                                          )}
+                                          onChange={(e) => {
+                                            const newTokens = e.target.checked
+                                              ? [
+                                                  ...delegationParams.allowedTokens,
+                                                  token,
+                                                ]
+                                              : delegationParams.allowedTokens.filter(
+                                                  (t) => t !== token
+                                                );
+                                            setDelegationParams((prev) => ({
+                                              ...prev,
+                                              allowedTokens: newTokens,
+                                            }));
+                                          }}
+                                          className="w-3 h-3 text-green-400 bg-gray-700 border-gray-600 rounded focus:ring-green-400 focus:ring-1"
+                                        />
+                                        <span className="text-sm text-white">
+                                          {token}
+                                        </span>
+                                      </label>
+                                    ))}
+                                  </div>
+                                  <input
+                                    type="text"
+                                    placeholder="Add custom token (e.g., LINK)"
+                                    className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white text-sm"
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        const token = e.currentTarget.value
+                                          .trim()
+                                          .toUpperCase();
+                                        if (
+                                          token &&
+                                          !delegationParams.allowedTokens.includes(
+                                            token
+                                          )
+                                        ) {
+                                          setDelegationParams((prev) => ({
+                                            ...prev,
+                                            allowedTokens: [
+                                              ...prev.allowedTokens,
+                                              token,
+                                            ],
+                                          }));
+                                          e.currentTarget.value = "";
+                                        }
+                                      }
+                                    }}
+                                  />
+                                </>
+                              )}
+
+                              {delegationParams.allowedTokens.length === 0 && (
+                                <div className="text-xs text-green-400">
+                                  AI can trade ANY tokens (no restrictions)
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="p-4 bg-black rounded-lg border-2 border-purple-400/50">
                           <p className="text-sm text-gray-300">
-                            AI agent is authorized to rebalance your portfolio
+                            <span className="font-bold text-purple-400">
+                              Note:
+                            </span>{" "}
+                            You will be prompted to sign this delegation in
+                            MetaMask. This creates a cryptographic signature
+                            proving you authorize the AI agent to trade on your
+                            behalf.
                           </p>
                         </div>
-                      </div>
 
-                      <div className="space-y-2 text-sm border-t-2 border-green-400/30 pt-4 mt-4">
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Agent Address:</span>
-                          <span className="mono text-green-400">{agentAddress.slice(0, 10)}...{agentAddress.slice(-8)}</span>
+                        <div className="grid grid-cols-2 gap-4">
+                          <button
+                            onClick={handleCreateDelegation}
+                            disabled={loading || chainId !== 10143}
+                            className="btn btn-success text-lg"
+                          >
+                            {chainId !== 10143
+                              ? "SWITCH NETWORK"
+                              : loading
+                              ? "SIGNING..."
+                              : "SIGN DELEGATION"}
+                          </button>
+                          <button
+                            onClick={() => {
+                              activityLogger.info(
+                                "DELEGATION",
+                                "User skipped delegation setup"
+                              );
+                              fetchPortfolio();
+                              setStep("portfolio");
+                            }}
+                            disabled={loading}
+                            className="btn btn-secondary text-lg"
+                          >
+                            SKIP FOR NOW
+                          </button>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Smart Account:</span>
-                          <span className="mono text-green-400">{smartAccountAddress.slice(0, 10)}...{smartAccountAddress.slice(-8)}</span>
+                        <p className="text-xs text-gray-500 text-center">
+                          You can set up delegation later from Settings. Trades
+                          require delegation.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="p-6 bg-black rounded-lg border-2 border-green-400 shadow-[0_0_30px_rgba(57,255,20,0.3)]">
+                          <div className="flex items-center gap-3 mb-4">
+                            <div className="w-8 h-8 bg-green-400 rounded-full flex items-center justify-center">
+                              <span className="text-black text-xl font-bold">
+                                OK
+                              </span>
+                            </div>
+                            <div>
+                              <h3 className="text-xl font-bold text-green-400">
+                                DELEGATION ACTIVE
+                              </h3>
+                              <p className="text-sm text-gray-300">
+                                AI agent is authorized to rebalance your
+                                portfolio
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2 text-sm border-t-2 border-green-400/30 pt-4 mt-4">
+                            <div className="flex justify-between">
+                              <span className="text-gray-400">
+                                Agent Address:
+                              </span>
+                              <span className="mono text-green-400">
+                                {agentAddress.slice(0, 10)}...
+                                {agentAddress.slice(-8)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-400">
+                                Smart Account:
+                              </span>
+                              <span className="mono text-green-400">
+                                {smartAccountAddress.slice(0, 10)}...
+                                {smartAccountAddress.slice(-8)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-400">Status:</span>
+                              <span className="text-green-400 font-bold">
+                                Active
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Status:</span>
-                          <span className="text-green-400 font-bold">Active</span>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <button
+                            onClick={() => setShowRevokeModal(true)}
+                            disabled={loading}
+                            className="btn btn-danger text-lg"
+                          >
+                            REVOKE DELEGATION
+                          </button>
+                          <button
+                            onClick={fetchPortfolio}
+                            disabled={loading}
+                            className="btn btn-primary text-lg"
+                          >
+                            CONTINUE TO PORTFOLIO →
+                          </button>
                         </div>
                       </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <button
-                        onClick={handleRevokeDelegation}
-                        disabled={loading}
-                        className="btn btn-danger text-lg"
-                      >
-                        {loading ? 'REVOKING...' : 'REVOKE DELEGATION'}
-                      </button>
-                      <button
-                        onClick={fetchPortfolio}
-                        disabled={loading}
-                        className="btn btn-primary text-lg"
-                      >
-                        CONTINUE TO PORTFOLIO →
-                      </button>
-                    </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Portfolio View */}
-      {step === 'portfolio' && (
-        <div className="card fade-in">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-3xl font-bold neon-text">YOUR PORTFOLIO</h2>
-            <button
-              onClick={fetchPortfolio}
-              disabled={loading}
-              className="btn btn-secondary"
-            >
-              {loading ? 'LOADING...' : 'REFRESH'}
-            </button>
-          </div>
-
-          <div className="space-y-6">
-            <div className="text-center p-6 bg-black rounded-lg border-2 border-cyan-400 shadow-[0_0_30px_rgba(0,255,247,0.3)]">
-              <div className="text-5xl font-bold neon-text">
-                ${formatValue(totalValueUSD)}
-              </div>
-              <div className="text-gray-400 mt-2">TOTAL VALUE</div>
             </div>
+          )}
 
-            {holdings.length > 0 ? (
-              <>
-                <div className="overflow-x-auto">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>TOKEN</th>
-                        <th>BALANCE</th>
-                        <th>VALUE</th>
-                        <th>ALLOCATION</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {holdings.map((h) => {
-                        const balance = Number(h.balance) / 10 ** h.decimals;
-                        return (
-                          <tr key={h.symbol}>
-                            <td className="font-bold text-cyan-400 text-lg">{h.symbol}</td>
-                            <td className="mono">
-                              {formatValue(balance)}
-                            </td>
-                            <td className="font-bold">${formatValue(h.valueUSD)}</td>
-                            <td>
-                              <div className="flex items-center gap-3">
-                                <div className="flex-1 bg-black border border-cyan-400/30 rounded-full h-3 overflow-hidden">
-                                  <div
-                                    className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,255,247,0.5)]"
-                                    style={{ width: `${h.percentage}%` }}
-                                  ></div>
-                                </div>
-                                <span className="font-bold min-w-[60px]">{h.percentage.toFixed(1)}%</span>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+          {/* Portfolio View */}
+          {step === "portfolio" && (
+            <div className="card fade-in">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-3xl font-bold neon-text">YOUR PORTFOLIO</h2>
+                <button
+                  onClick={() => fetchPortfolio(true)}
+                  disabled={loading}
+                  className="btn btn-secondary"
+                >
+                  {loading ? "LOADING..." : "REFRESH"}
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                <div className="text-center p-6 bg-black rounded-lg border-2 border-cyan-400 shadow-[0_0_30px_rgba(0,255,247,0.3)]">
+                  <div className="text-5xl font-bold neon-text">
+                    {formatUSD(totalValueUSD)}
+                  </div>
+                  <div className="text-gray-400 mt-2">TOTAL VALUE</div>
                 </div>
 
-                <div className="border-t-2 border-cyan-400/30 pt-6">
-                  <h3 className="text-2xl font-bold mb-4 text-cyan-400">TARGET ALLOCATION</h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    {targets.map((t) => (
-                      <div key={t.symbol} className="space-y-2">
-                        <label className="block text-sm font-bold text-gray-400 uppercase">
-                          {t.symbol} (%)
-                        </label>
-                        <input
-                          type="number"
-                          value={t.targetPercentage}
-                          onChange={(e) => updateTarget(t.symbol, parseFloat(e.target.value) || 0)}
-                          min="0"
-                          max="100"
-                          step="5"
-                          className="text-xl font-bold"
-                        />
-                      </div>
-                    ))}
+                {holdings.length > 0 ? (
+                  <>
+                    <div className="space-y-3">
+                      {holdings.map((h) => {
+                        // Format balance
+                        const balanceNum = parseFloat(h.balance || "0");
+                        const displayBalance = isNaN(balanceNum)
+                          ? "0.00"
+                          : balanceNum.toFixed(6).replace(/\.?0+$/, "");
+
+                        // Confidence color
+                        const confidence = parseFloat(h.pconf || "0");
+                        const confidenceColor =
+                          confidence >= 97
+                            ? "text-green-400"
+                            : confidence >= 50
+                            ? "text-yellow-400"
+                            : "text-red-400";
+
+                        // Check if token is expanded
+                        const isExpanded = expandedToken === h.token;
+
+                        // Check for warnings
+                        const isFake = h.categories?.includes("fake");
+                        const isLowConfidence = confidence < 50;
+
+                        return (
+                          <div
+                            key={`${h.token}-${h.symbol}`}
+                            className={`p-4 rounded-lg border-2 ${
+                              isFake
+                                ? "bg-red-500/10 border-red-400/50"
+                                : isLowConfidence
+                                ? "bg-yellow-500/10 border-yellow-400/50"
+                                : "bg-black border-cyan-400/30"
+                            } hover:border-cyan-400 transition-all`}
+                          >
+                            {/* Main Token Info - Enhanced Layout */}
+                            <div className="grid grid-cols-12 gap-4 items-center">
+                              {/* Logo - 1 column */}
+                              <div className="col-span-1">
+                                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-gray-800 to-black border-2 border-cyan-400/50 flex items-center justify-center overflow-hidden shadow-lg">
+                                  {h.logo ? (
+                                    <img
+                                      src={h.logo}
+                                      alt={h.symbol}
+                                      className="w-full h-full object-cover rounded-full"
+                                      onError={(e) => {
+                                        const target =
+                                          e.target as HTMLImageElement;
+                                        target.style.display = "none";
+                                        const parent = target.parentElement;
+                                        if (parent) {
+                                          parent.innerHTML = `<div class="w-14 h-14 rounded-full bg-gradient-to-br from-cyan-500/20 to-purple-500/20 flex items-center justify-center border-2 border-cyan-400/50"><span class="text-lg font-bold text-cyan-400">${h.symbol.charAt(
+                                            0
+                                          )}</span></div>`;
+                                        }
+                                      }}
+                                    />
+                                  ) : h.symbol === "MON" ? (
+                                    <div className="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center">
+                                      <img
+                                        src="/66c3711574e166ac115bba8a_Logo Mark.svg"
+                                        alt="MON"
+                                        className="w-6 h-6"
+                                        style={{
+                                          filter:
+                                            "brightness(0) saturate(100%) invert(56%) sepia(94%) saturate(6738%) hue-rotate(266deg) brightness(101%) contrast(101%)",
+                                        }}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="w-14 h-14 rounded-full bg-gradient-to-br from-cyan-500/20 to-purple-500/20 flex items-center justify-center">
+                                      <span className="text-lg font-bold text-cyan-400">
+                                        {h.symbol.charAt(0)}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Token Name & Symbol - 3 columns */}
+                              <div className="col-span-3">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <h3 className="text-xl font-bold text-cyan-400 font-mono">
+                                      {h.symbol}
+                                    </h3>
+                                    {isFake && (
+                                      <span className="text-xs font-bold px-2 py-1 rounded bg-red-500 text-white animate-pulse">
+                                        FAKE
+                                      </span>
+                                    )}
+                                    {h.categories?.includes("verified") && (
+                                      <span className="text-xs font-bold px-2 py-1 rounded bg-green-500 text-black">
+                                        VERIFIED
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-sm text-gray-400 font-medium">
+                                    {h.name || "Unknown Token"}
+                                  </div>
+                                  <div className="flex flex-wrap gap-1">
+                                    {h.categories?.slice(0, 2).map((cat) => (
+                                      <span
+                                        key={cat}
+                                        className={`text-xs px-2 py-0.5 rounded font-bold border ${
+                                          cat === "ecosystem"
+                                            ? "bg-purple-500/20 border-purple-400 text-purple-400"
+                                            : cat === "lst"
+                                            ? "bg-blue-500/20 border-blue-400 text-blue-400"
+                                            : cat === "verified"
+                                            ? "bg-green-500/20 border-green-400 text-green-400"
+                                            : "bg-gray-800 border-gray-600 text-gray-300"
+                                        }`}
+                                      >
+                                        {cat.toUpperCase()}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Values - 3 columns */}
+                              <div className="col-span-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="text-2xl font-bold text-white font-mono">
+                                    {formatUSD(h.valueUSD)}
+                                  </div>
+                                  <div className="text-sm text-gray-400 font-mono">
+                                    {displayBalance} {h.symbol}
+                                  </div>
+                                  <div className="text-xs text-gray-500 font-mono">
+                                    @ {formatUSD(h.price)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Confidence & Allocation - 2 columns */}
+                              <div className="col-span-2 space-y-2">
+                                <div className="text-center">
+                                  <div
+                                    className={`text-lg font-bold font-mono ${confidenceColor}`}
+                                  >
+                                    {confidence}%
+                                  </div>
+                                  <div className="text-xs text-gray-500 uppercase">
+                                    Confidence
+                                  </div>
+                                </div>
+                                <div className="space-y-1">
+                                  <div className="text-xs text-gray-400 text-center font-mono">
+                                    {formatPercentage(h.percentage)}
+                                  </div>
+                                  <div className="bg-black border border-cyan-400/30 rounded-full h-2 overflow-hidden">
+                                    <div
+                                      className="h-full bg-gradient-to-r from-cyan-400 to-purple-400 shadow-[0_0_10px_rgba(0,255,247,0.5)]"
+                                      style={{
+                                        width: `${Math.min(
+                                          h.percentage,
+                                          100
+                                        )}%`,
+                                      }}
+                                    ></div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* More Info Button - 1 column */}
+                              <div className="col-span-1">
+                                <button
+                                  onClick={() =>
+                                    setExpandedToken(
+                                      isExpanded ? null : h.token
+                                    )
+                                  }
+                                  className="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-cyan-400/20 to-purple-400/20 hover:from-cyan-400/30 hover:to-purple-400/30 border border-cyan-400/50 text-cyan-400 text-xs font-bold transition-all hover:shadow-[0_0_15px_rgba(0,255,247,0.3)]"
+                                >
+                                  {isExpanded ? "▲" : "▼"}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Expanded Details - Enhanced */}
+                            {isExpanded && (
+                              <div className="mt-6 pt-6 border-t-2 border-gradient-to-r from-cyan-400/30 via-purple-400/30 to-cyan-400/30 bg-gradient-to-r from-black via-gray-900/50 to-black rounded-lg p-6 shadow-xl">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                  {/* Contract Address */}
+                                  <div className="space-y-2">
+                                    <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide">
+                                      Contract Address
+                                    </div>
+                                    <div className="font-mono text-xs bg-black/50 p-3 rounded border border-cyan-400/30 break-all">
+                                      {h.token ===
+                                      "0x0000000000000000000000000000000000000000" ? (
+                                        <span className="text-purple-400 font-bold">
+                                          Native MON Token
+                                        </span>
+                                      ) : (
+                                        <span className="text-cyan-400">
+                                          {h.token}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {h.token !==
+                                      "0x0000000000000000000000000000000000000000" && (
+                                      <a
+                                        href={`https://testnet.monadexplorer.com/address/${h.token}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-block text-xs text-blue-400 hover:text-blue-300 hover:underline transition-colors"
+                                      >
+                                        View on Explorer →
+                                      </a>
+                                    )}
+                                  </div>
+
+                                  {/* Token Details */}
+                                  <div className="space-y-4">
+                                    <div>
+                                      <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-2">
+                                        Token Details
+                                      </div>
+                                      <div className="space-y-2 text-sm">
+                                        <div className="flex justify-between bg-black/30 p-2 rounded">
+                                          <span className="text-gray-400">
+                                            Decimals:
+                                          </span>
+                                          <span className="text-white font-mono">
+                                            {h.decimals}
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between bg-black/30 p-2 rounded">
+                                          <span className="text-gray-400">
+                                            Price:
+                                          </span>
+                                          <span className="text-green-400 font-mono font-bold">
+                                            ${h.price.toFixed(6)}
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between bg-black/30 p-2 rounded">
+                                          <span className="text-gray-400">
+                                            24h Change:
+                                          </span>
+                                          <span className="text-gray-500 font-mono">
+                                            Unknown
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* MON Values */}
+                                  <div className="space-y-4">
+                                    <div>
+                                      <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-2">
+                                        MON Metrics
+                                      </div>
+                                      <div className="space-y-2 text-sm">
+                                        <div className="flex justify-between bg-black/30 p-2 rounded">
+                                          <span className="text-gray-400">
+                                            MON Value:
+                                          </span>
+                                          <span className="text-purple-400 font-mono font-bold">
+                                            {parseFloat(
+                                              h.monValue || "0"
+                                            ).toFixed(4)}{" "}
+                                            MON
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between bg-black/30 p-2 rounded">
+                                          <span className="text-gray-400">
+                                            MON per Token:
+                                          </span>
+                                          <span className="text-purple-400 font-mono">
+                                            {parseFloat(
+                                              h.monPerToken || "0"
+                                            ).toFixed(6)}
+                                          </span>
+                                        </div>
+                                        <div className="flex justify-between bg-black/30 p-2 rounded">
+                                          <span className="text-gray-400">
+                                            Market Data:
+                                          </span>
+                                          <span className="text-gray-500 font-mono">
+                                            Limited
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Categories Section */}
+                                <div className="mt-6 pt-4 border-t border-cyan-400/20">
+                                  <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-3">
+                                    Token Categories
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {h.categories && h.categories.length > 0 ? (
+                                      h.categories.map((cat) => (
+                                        <span
+                                          key={cat}
+                                          className={`px-3 py-1 rounded-full text-xs font-bold border-2 transition-all hover:shadow-lg ${
+                                            cat === "verified"
+                                              ? "bg-green-500/20 border-green-400 text-green-400 hover:shadow-green-400/30"
+                                              : cat === "fake"
+                                              ? "bg-red-500/20 border-red-400 text-red-400 hover:shadow-red-400/30 animate-pulse"
+                                              : cat === "ecosystem"
+                                              ? "bg-purple-500/20 border-purple-400 text-purple-400 hover:shadow-purple-400/30"
+                                              : cat === "lst"
+                                              ? "bg-blue-500/20 border-blue-400 text-blue-400 hover:shadow-blue-400/30"
+                                              : cat === "stablecoin"
+                                              ? "bg-yellow-500/20 border-yellow-400 text-yellow-400 hover:shadow-yellow-400/30"
+                                              : "bg-gray-800/50 border-gray-600 text-gray-300 hover:shadow-gray-600/30"
+                                          }`}
+                                        >
+                                          {cat.toUpperCase()}
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-800/50 border-2 border-gray-600 text-gray-500">
+                                        No categories available
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Warning Messages */}
+                            {isFake && (
+                              <div className="mt-3 p-3 bg-red-500/20 border border-red-400 rounded text-sm text-red-400">
+                                <strong>WARNING:</strong> This token is marked
+                                as FAKE. Do not trade or hold.
+                              </div>
+                            )}
+                            {isLowConfidence && !isFake && (
+                              <div className="mt-3 p-3 bg-yellow-500/20 border border-yellow-400 rounded text-sm text-yellow-400">
+                                <strong>LOW CONFIDENCE:</strong> Price data may
+                                be unreliable. Trade with caution.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="border-t-2 border-cyan-400/30 pt-6">
+                      <h3 className="text-2xl font-bold mb-4 text-purple-400 text-center">
+                        AI PORTFOLIO ANALYSIS
+                      </h3>
+                      <p className="text-gray-300 text-center mb-6">
+                        Let our AI analyze your portfolio and suggest optimal
+                        rebalancing trades
+                      </p>
+                      <button
+                        onClick={handleComputeStrategy}
+                        disabled={loading}
+                        className="btn btn-success w-full text-lg"
+                      >
+                        {loading
+                          ? "ANALYZING..."
+                          : "🤖 GET AI ANALYSIS & SUGGESTIONS →"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-12">
+                    <p className="text-xl text-gray-400 mb-4">
+                      NO TOKENS FOUND
+                    </p>
+                    <p className="text-gray-500">
+                      Get testnet tokens at{" "}
+                      <a
+                        href="https://faucet.monad.xyz"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-cyan-400 hover:underline"
+                      >
+                        faucet.monad.xyz
+                      </a>
+                    </p>
                   </div>
-                  <div className="mt-4 text-center">
-                    <span className="text-lg">
-                      TOTAL: <span className={`font-bold ${
-                        Math.abs(targets.reduce((sum, t) => sum + t.targetPercentage, 0) - 100) < 0.1
-                          ? 'text-green-400'
-                          : 'text-red-400'
-                      }`}>
-                        {targets.reduce((sum, t) => sum + t.targetPercentage, 0).toFixed(1)}%
-                      </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Rebalancing Strategy */}
+          {step === "rebalance" && strategy && (
+            <div className="card fade-in">
+              <h2 className="text-3xl font-bold mb-6 neon-text">
+                AI REBALANCING STRATEGY
+              </h2>
+
+              <div className="space-y-6">
+                <div className="p-6 bg-black rounded-lg border-2 border-purple-400 shadow-[0_0_30px_rgba(191,0,255,0.3)]">
+                  <h3 className="font-bold mb-3 text-purple-400 text-xl">
+                    AI RATIONALE:
+                  </h3>
+                  <p className="text-gray-200 leading-relaxed">
+                    {strategy.rationale}
+                  </p>
+                </div>
+
+                <div>
+                  <h3 className="font-bold mb-4 text-cyan-400 text-xl">
+                    REQUIRED TRADES ({strategy.trades.length})
+                  </h3>
+                  {strategy.trades.length > 0 ? (
+                    <div className="space-y-3">
+                      {strategy.trades.map((trade, index) => (
+                        <div
+                          key={index}
+                          className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400/30 hover:border-cyan-400 transition-all"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                              <span className="text-2xl font-bold text-red-400">
+                                {trade.fromSymbol}
+                              </span>
+                              <span className="text-cyan-400">→</span>
+                              <span className="text-2xl font-bold text-green-400">
+                                {trade.toSymbol}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-2 text-sm text-gray-400">
+                            {trade.reason}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-green-400 text-xl font-bold">
+                      PORTFOLIO ALREADY BALANCED!
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400/30">
+                  <div className="text-sm text-gray-400">
+                    ESTIMATED GAS:{" "}
+                    <span className="mono text-cyan-400">
+                      {strategy.estimatedGas}
                     </span>
                   </div>
                 </div>
 
-                <button
-                  onClick={handleComputeStrategy}
-                  disabled={loading}
-                  className="btn btn-success w-full text-lg"
-                >
-                  {loading ? 'COMPUTING...' : 'COMPUTE AI STRATEGY →'}
-                </button>
-              </>
-            ) : (
-              <div className="text-center py-12">
-                <p className="text-xl text-gray-400 mb-4">NO TOKENS FOUND</p>
-                <p className="text-gray-500">
-                  Get testnet tokens at{' '}
-                  <a
-                    href="https://faucet.monad.xyz"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-cyan-400 hover:underline"
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setStep("portfolio")}
+                    className="btn btn-secondary flex-1 text-lg"
                   >
-                    faucet.monad.xyz
-                  </a>
-                </p>
+                    ← BACK
+                  </button>
+                  <button
+                    onClick={handleExecuteRebalance}
+                    disabled={strategy.trades.length === 0 || loading}
+                    className="btn btn-primary flex-1 text-lg"
+                  >
+                    {loading ? "EXECUTING..." : "EXECUTE REBALANCING →"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Manual Swap Interface */}
+          {step === "swap" && (
+            <div className="card fade-in">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-3xl font-bold neon-text">MANUAL SWAP</h2>
+                <button
+                  onClick={loadAllTokens}
+                  disabled={swapState.loadingTokens}
+                  className="btn btn-secondary"
+                >
+                  {swapState.loadingTokens ? "LOADING..." : "REFRESH TOKENS"}
+                </button>
+              </div>
+
+              {swapState.loadingTokens ? (
+                <div className="text-center py-12">
+                  <div className="spinner mx-auto mb-4"></div>
+                  <p className="text-gray-400">Loading available tokens...</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* Token Count Info */}
+                  <div className="p-4 bg-black rounded-lg border-2 border-cyan-400/30">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <span className="text-cyan-400 font-bold">
+                          {swapState.allTokens.length}
+                        </span>
+                        <span className="text-gray-400 ml-2">
+                          total tokens available
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-green-400 font-bold">
+                          {
+                            swapState.allTokens.filter(
+                              (t: any) => parseFloat(t.balance) > 0
+                            ).length
+                          }
+                        </span>
+                        <span className="text-gray-400 ml-2">
+                          in your wallet
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Swap Form */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* From Token */}
+                    <div className="p-4 bg-black rounded-lg border-2 border-red-400/50">
+                      <h3 className="font-bold text-red-400 mb-4">FROM</h3>
+                      <select
+                        className="w-full p-3 bg-black border-2 border-red-400/50 rounded text-white mb-4 hover:border-red-400 focus:border-red-400 focus:ring-2 focus:ring-red-400/20 transition-all duration-300 font-mono text-sm shadow-lg shadow-red-400/10"
+                        value={swapState.fromToken}
+                        onChange={(e) =>
+                          setSwapState((prev) => ({
+                            ...prev,
+                            fromToken: e.target.value,
+                            fromAmount: "",
+                          }))
+                        }
+                      >
+                        <option value="">Select token to sell</option>
+                        <optgroup label="Your Holdings">
+                          {swapState.allTokens
+                            .filter((t: any) => parseFloat(t.balance) > 0)
+                            .map((t: any) => (
+                              <option key={t.address} value={t.address}>
+                                {t.symbol} - {parseFloat(t.balance).toFixed(4)}{" "}
+                                (${(t.balanceUSD || 0).toFixed(2)})
+                              </option>
+                            ))}
+                        </optgroup>
+                        <optgroup label="All Available Tokens">
+                          {swapState.allTokens
+                            .filter((t: any) => parseFloat(t.balance) === 0)
+                            .slice(0, 20) // Limit to prevent UI overflow
+                            .map((t: any) => (
+                              <option key={t.address} value={t.address}>
+                                {t.symbol} - {t.name} ($
+                                {(t.price || 0).toFixed(4)})
+                              </option>
+                            ))}
+                        </optgroup>
+                      </select>
+                      <div className="mb-4">
+                        <label className="block text-sm text-gray-400 mb-2">
+                          Amount
+                        </label>
+                        <input
+                          type="number"
+                          placeholder="0.0"
+                          value={swapState.fromAmount}
+                          onChange={(e) =>
+                            setSwapState((prev) => ({
+                              ...prev,
+                              fromAmount: e.target.value,
+                            }))
+                          }
+                          className="w-full p-3 bg-black border-2 border-red-400/50 rounded text-white text-right text-2xl font-bold hover:border-red-400 focus:border-red-400 focus:ring-2 focus:ring-red-400/20 transition-all duration-300 font-mono shadow-lg shadow-red-400/10 glow-red"
+                          step="any"
+                        />
+                      </div>
+                      <div className="text-sm text-gray-400">
+                        Available Balance:{" "}
+                        <span className="text-white font-bold">
+                          {swapState.fromToken
+                            ? (() => {
+                                const token = swapState.allTokens.find(
+                                  (t: any) => t.address === swapState.fromToken
+                                );
+                                return token
+                                  ? `${parseFloat(token.balance).toFixed(4)} ${
+                                      token.symbol
+                                    }`
+                                  : "0.00";
+                              })()
+                            : "Select token"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* To Token */}
+                    <div className="p-4 bg-black rounded-lg border-2 border-green-400/50">
+                      <h3 className="font-bold text-green-400 mb-4">TO</h3>
+                      <select
+                        className="w-full p-3 bg-black border-2 border-green-400/50 rounded text-white mb-4 hover:border-green-400 focus:border-green-400 focus:ring-2 focus:ring-green-400/20 transition-all duration-300 font-mono text-sm shadow-lg shadow-green-400/10"
+                        value={swapState.toToken}
+                        onChange={(e) =>
+                          setSwapState((prev) => ({
+                            ...prev,
+                            toToken: e.target.value,
+                          }))
+                        }
+                      >
+                        <option value="">Select token to buy</option>
+                        <optgroup label="Popular Tokens">
+                          {swapState.allTokens
+                            .filter(
+                              (t: any) => t.address !== swapState.fromToken
+                            )
+                            .slice(0, 10)
+                            .map((t: any) => (
+                              <option key={t.address} value={t.address}>
+                                {t.symbol} - {t.name}
+                              </option>
+                            ))}
+                        </optgroup>
+                        <optgroup label="All Available Tokens">
+                          {swapState.allTokens
+                            .filter(
+                              (t: any) => t.address !== swapState.fromToken
+                            )
+                            .slice(10, 50)
+                            .map((t: any) => (
+                              <option key={t.address} value={t.address}>
+                                {t.symbol} - {t.name}
+                              </option>
+                            ))}
+                        </optgroup>
+                      </select>
+                      <div className="mb-4">
+                        <label className="block text-sm text-gray-400 mb-2">
+                          You'll receive (estimated)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="0.0"
+                          value={
+                            swapState.loadingQuote
+                              ? "Loading..."
+                              : swapState.toAmount
+                          }
+                          className="w-full p-3 bg-black border-2 border-green-400/50 rounded text-white text-right text-2xl font-bold font-mono shadow-lg shadow-green-400/10 glow-green"
+                          readOnly
+                        />
+                      </div>
+                      <div className="text-sm text-gray-400">
+                        Your Balance:{" "}
+                        <span className="text-white font-bold">
+                          {swapState.toToken
+                            ? (() => {
+                                const token = swapState.allTokens.find(
+                                  (t: any) => t.address === swapState.toToken
+                                );
+                                return token
+                                  ? `${parseFloat(token.balance).toFixed(4)} ${
+                                      token.symbol
+                                    }`
+                                  : "0.00";
+                              })()
+                            : "Select token"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Swap Settings */}
+                  <div className="p-4 bg-black rounded-lg border-2 border-cyan-400/50 shadow-lg shadow-cyan-400/10">
+                    <h4 className="font-bold text-cyan-400 mb-4 font-mono">
+                      SWAP SETTINGS
+                    </h4>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-sm text-cyan-300 mb-2 font-mono">
+                          Slippage Tolerance
+                        </label>
+                        <select
+                          className="w-full p-2 bg-black border-2 border-cyan-400/50 rounded text-white hover:border-cyan-400 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 transition-all duration-300 font-mono text-sm glow-cyan"
+                          value={swapState.slippage}
+                          onChange={(e) =>
+                            setSwapState((prev) => ({
+                              ...prev,
+                              slippage: e.target.value,
+                            }))
+                          }
+                        >
+                          <option value="0.5">0.5%</option>
+                          <option value="1">1.0%</option>
+                          <option value="2">2.0%</option>
+                          <option value="5">5.0%</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-cyan-300 mb-2 font-mono">
+                          Transaction Deadline
+                        </label>
+                        <select
+                          className="w-full p-2 bg-black border-2 border-cyan-400/50 rounded text-white hover:border-cyan-400 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 transition-all duration-300 font-mono text-sm glow-cyan"
+                          value={swapState.deadline}
+                          onChange={(e) =>
+                            setSwapState((prev) => ({
+                              ...prev,
+                              deadline: e.target.value,
+                            }))
+                          }
+                        >
+                          <option value="5">5 minutes</option>
+                          <option value="10">10 minutes</option>
+                          <option value="20">20 minutes</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-cyan-300 mb-2 font-mono">
+                          Priority
+                        </label>
+                        <select
+                          className="w-full p-2 bg-black border-2 border-cyan-400/50 rounded text-white hover:border-cyan-400 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 transition-all duration-300 font-mono text-sm glow-cyan"
+                          value={swapState.priority}
+                          onChange={(e) =>
+                            setSwapState((prev) => ({
+                              ...prev,
+                              priority: e.target.value,
+                            }))
+                          }
+                        >
+                          <option value="normal">Normal</option>
+                          <option value="fast">Fast</option>
+                          <option value="instant">Instant</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Swap Preview */}
+                  {swapState.quote &&
+                    swapState.fromToken &&
+                    swapState.toToken && (
+                      <div className="p-4 bg-black rounded-lg border-2 border-yellow-400/50">
+                        <h4 className="font-bold text-yellow-400 mb-4">
+                          SWAP PREVIEW
+                        </h4>
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">
+                              Exchange Rate:
+                            </span>
+                            <span className="text-white font-bold">
+                              1{" "}
+                              {
+                                swapState.allTokens.find(
+                                  (t: any) => t.address === swapState.fromToken
+                                )?.symbol
+                              }{" "}
+                              ={" "}
+                              {swapState.fromAmount &&
+                              parseFloat(swapState.fromAmount) > 0
+                                ? (
+                                    parseFloat(swapState.toAmount) /
+                                    parseFloat(swapState.fromAmount)
+                                  ).toFixed(6)
+                                : "0"}{" "}
+                              {
+                                swapState.allTokens.find(
+                                  (t: any) => t.address === swapState.toToken
+                                )?.symbol
+                              }
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Price Impact:</span>
+                            <span className="text-green-400 font-bold">
+                              {swapState.quote.priceImpact || "< 0.1%"}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">
+                              Minimum Received:
+                            </span>
+                            <span className="text-white font-bold">
+                              {(
+                                parseFloat(swapState.toAmount) *
+                                (1 - parseFloat(swapState.slippage) / 100)
+                              ).toFixed(4)}{" "}
+                              {
+                                swapState.allTokens.find(
+                                  (t: any) => t.address === swapState.toToken
+                                )?.symbol
+                              }
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-400">Network Fee:</span>
+                            <span className="text-white font-bold">
+                              {swapState.quote.estimatedGas
+                                ? `~${(
+                                    parseFloat(swapState.quote.estimatedGas) /
+                                    1e18
+                                  ).toFixed(6)} MON`
+                                : "~0.001 MON"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                  {/* Action Buttons */}
+                  <div className="flex gap-4">
+                    <button
+                      onClick={() => setStep("portfolio")}
+                      className="btn btn-secondary flex-1 text-lg"
+                    >
+                      ← BACK
+                    </button>
+                    <button
+                      onClick={handleExecuteSwap}
+                      disabled={
+                        loading ||
+                        !swapState.fromToken ||
+                        !swapState.toToken ||
+                        !swapState.fromAmount ||
+                        parseFloat(swapState.fromAmount) <= 0
+                      }
+                      className="btn btn-primary flex-1 text-lg"
+                    >
+                      {loading ? "SWAPPING..." : "EXECUTE SWAP →"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Enhanced Activity Logs & Analytics */}
+          {step === "logs" && (
+            <div className="card fade-in">
+              <h2 className="text-3xl font-bold mb-6 neon-text">
+                ACTIVITY LOGS & ANALYTICS
+              </h2>
+
+              {/* Enhanced Analytics Dashboard */}
+              {address &&
+                (() => {
+                  const analytics = assetNestIndexer.getAnalytics(address);
+                  return (
+                    <div className="mb-6 p-4 bg-black rounded-lg border-2 border-purple-400/50">
+                      <h3 className="text-xl font-bold text-purple-400 mb-4">
+                        📊 PORTFOLIO ANALYTICS
+                      </h3>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        {(() => {
+                          return (
+                            <>
+                              <div className="text-center p-3 bg-gray-800/50 rounded">
+                                <div className="text-2xl font-bold text-cyan-400">
+                                  {analytics.totalTransactions}
+                                </div>
+                                <div className="text-xs text-gray-400">
+                                  Total Transactions
+                                </div>
+                              </div>
+                              <div className="text-center p-3 bg-gray-800/50 rounded">
+                                <div className="text-2xl font-bold text-green-400">
+                                  {analytics.totalSwaps}
+                                </div>
+                                <div className="text-xs text-gray-400">
+                                  Swaps Executed
+                                </div>
+                              </div>
+                              <div className="text-center p-3 bg-gray-800/50 rounded">
+                                <div className="text-2xl font-bold text-blue-400">
+                                  {analytics.totalRebalances}
+                                </div>
+                                <div className="text-xs text-gray-400">
+                                  AI Rebalances
+                                </div>
+                              </div>
+                              <div className="text-center p-3 bg-gray-800/50 rounded">
+                                <div className="text-2xl font-bold text-yellow-400">
+                                  ${analytics.latestPortfolioValue.toFixed(2)}
+                                </div>
+                                <div className="text-xs text-gray-400">
+                                  Current Value
+                                </div>
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
+
+                      <div className="mt-4 pt-4 border-t-2 border-purple-400/30">
+                        <div className="text-sm text-gray-400 flex justify-between">
+                          <span>
+                            First Activity:{" "}
+                            {analytics.firstActivity
+                              ? new Date(
+                                  analytics.firstActivity
+                                ).toLocaleDateString()
+                              : "None"}
+                          </span>
+                          <span>
+                            Last Activity:{" "}
+                            {analytics.lastActivity
+                              ? new Date(
+                                  analytics.lastActivity
+                                ).toLocaleDateString()
+                              : "None"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+              <div className="space-y-3 max-h-[600px] overflow-y-auto">
+                {activityLogger.getLogs().length > 0 ? (
+                  activityLogger
+                    .getLogs()
+                    .reverse()
+                    .map((log, index) => (
+                      <div
+                        key={index}
+                        className={`p-4 rounded-lg border-2 ${
+                          log.level === "success"
+                            ? "bg-green-500/10 border-green-400/50"
+                            : log.level === "error"
+                            ? "bg-red-500/10 border-red-400/50"
+                            : log.level === "warning"
+                            ? "bg-yellow-500/10 border-yellow-400/50"
+                            : "bg-blue-500/10 border-blue-400/50"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span
+                                className={`text-xs font-bold px-2 py-1 rounded ${
+                                  log.level === "success"
+                                    ? "bg-green-400 text-black"
+                                    : log.level === "error"
+                                    ? "bg-red-400 text-black"
+                                    : log.level === "warning"
+                                    ? "bg-yellow-400 text-black"
+                                    : "bg-blue-400 text-black"
+                                }`}
+                              >
+                                {log.level.toUpperCase()}
+                              </span>
+                              <span className="text-xs font-bold text-cyan-400">
+                                [{log.category}]
+                              </span>
+                            </div>
+                            <div className="text-sm text-white font-medium">
+                              {log.message}
+                            </div>
+                            {log.details && (
+                              <div className="text-xs text-gray-400 mt-1 mono">
+                                {log.details}
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500 mono whitespace-nowrap">
+                            {new Date(log.timestamp).toLocaleTimeString()}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                ) : (
+                  <div className="text-center py-12 text-gray-400">
+                    <p className="text-xl">No activity logs yet</p>
+                    <p className="text-sm mt-2">
+                      Logs will appear here as you use the app
+                    </p>
+                  </div>
+                )}
+              </div>
+              <div className="mt-6 pt-4 border-t-2 border-cyan-400/30">
+                <button
+                  onClick={() => {
+                    activityLogger.clear();
+                    setSuccess("Activity logs cleared");
+                  }}
+                  className="btn btn-secondary w-full"
+                >
+                  CLEAR LOGS
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* AI Analysis Window */}
+      {aiAnalysis.showWindow && (
+        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 backdrop-blur-sm">
+          <div className="card text-center max-w-2xl w-full mx-4">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <img src="/agent.png" alt="AI Agent" className="w-8 h-8" />
+                <h3 className="text-2xl font-bold neon-text">AI ANALYSIS</h3>
+              </div>
+              <button
+                onClick={() =>
+                  setAiAnalysis((prev) => ({ ...prev, showWindow: false }))
+                }
+                className="text-gray-400 hover:text-white text-2xl"
+              >
+                ×
+              </button>
+            </div>
+
+            {aiAnalysis.isAnalyzing ? (
+              <div className="space-y-6">
+                <div className="spinner mx-auto mb-6"></div>
+                <div className="text-xl font-bold text-cyan-400">
+                  ANALYZING PORTFOLIO...
+                </div>
+                <div className="text-gray-400">
+                  Crestal AI is evaluating your holdings and computing optimal
+                  rebalancing strategy
+                </div>
+                <div className="grid grid-cols-3 gap-4 mt-6">
+                  <div className="p-3 bg-gray-800/50 rounded">
+                    <div className="text-sm text-gray-400">Risk Assessment</div>
+                    <div className="text-cyan-400 font-bold animate-pulse">
+                      Processing...
+                    </div>
+                  </div>
+                  <div className="p-3 bg-gray-800/50 rounded">
+                    <div className="text-sm text-gray-400">Market Analysis</div>
+                    <div className="text-cyan-400 font-bold animate-pulse">
+                      Processing...
+                    </div>
+                  </div>
+                  <div className="p-3 bg-gray-800/50 rounded">
+                    <div className="text-sm text-gray-400">Trade Strategy</div>
+                    <div className="text-cyan-400 font-bold animate-pulse">
+                      Processing...
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : aiAnalysis.result ? (
+              <div className="space-y-6 text-left">
+                <div className="p-4 bg-green-500/10 border-2 border-green-400/50 rounded-lg">
+                  <div className="text-green-400 font-bold mb-2">
+                    ANALYSIS COMPLETE
+                  </div>
+                  <div className="text-sm text-gray-300">
+                    AI has computed {aiAnalysis.result.trades?.length || 0}{" "}
+                    optimal trades for your portfolio
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-3 bg-gray-800/50 rounded">
+                    <div className="text-sm text-gray-400">
+                      Confidence Score
+                    </div>
+                    <div className="text-2xl font-bold text-green-400">
+                      {aiAnalysis.result.confidence || "85"}%
+                    </div>
+                  </div>
+                  <div className="p-3 bg-gray-800/50 rounded">
+                    <div className="text-sm text-gray-400">Risk Level</div>
+                    <div className="text-xl font-bold text-yellow-400">
+                      {aiAnalysis.result.riskLevel || "MODERATE"}
+                    </div>
+                  </div>
+                </div>
+
+                {aiAnalysis.result.reasoning && (
+                  <div className="p-4 bg-blue-500/10 border-2 border-blue-400/50 rounded-lg">
+                    <div className="flex items-center gap-2 mb-2">
+                      <img src="/agent.png" alt="AI" className="w-5 h-5" />
+                      <div className="text-blue-400 font-bold">
+                        AI REASONING
+                      </div>
+                    </div>
+                    <div className="text-sm text-gray-300 leading-relaxed">
+                      {aiAnalysis.result.reasoning}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-4">
+                  <button
+                    onClick={() =>
+                      setAiAnalysis((prev) => ({ ...prev, showWindow: false }))
+                    }
+                    className="btn btn-secondary flex-1"
+                  >
+                    CLOSE
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAiAnalysis((prev) => ({ ...prev, showWindow: false }));
+                      setStep("rebalance");
+                    }}
+                    className="btn btn-primary flex-1"
+                  >
+                    VIEW TRADES →
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-red-400">
+                Analysis failed. Please try again.
               </div>
             )}
           </div>
         </div>
-      )}
-
-      {/* Rebalancing Strategy */}
-      {step === 'rebalance' && strategy && (
-        <div className="card fade-in">
-          <h2 className="text-3xl font-bold mb-6 neon-text">
-            AI REBALANCING STRATEGY
-          </h2>
-
-          <div className="space-y-6">
-            <div className="p-6 bg-black rounded-lg border-2 border-purple-400 shadow-[0_0_30px_rgba(191,0,255,0.3)]">
-              <h3 className="font-bold mb-3 text-purple-400 text-xl">AI RATIONALE:</h3>
-              <p className="text-gray-200 leading-relaxed">{strategy.rationale}</p>
-            </div>
-
-            <div>
-              <h3 className="font-bold mb-4 text-cyan-400 text-xl">
-                REQUIRED TRADES ({strategy.trades.length})
-              </h3>
-              {strategy.trades.length > 0 ? (
-                <div className="space-y-3">
-                  {strategy.trades.map((trade, index) => (
-                    <div
-                      key={index}
-                      className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400/30 hover:border-cyan-400 transition-all"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <span className="text-2xl font-bold text-red-400">{trade.fromSymbol}</span>
-                          <span className="text-cyan-400">→</span>
-                          <span className="text-2xl font-bold text-green-400">{trade.toSymbol}</span>
-                        </div>
-                      </div>
-                      <div className="mt-2 text-sm text-gray-400">{trade.reason}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-green-400 text-xl font-bold">
-                  ✓ PORTFOLIO ALREADY BALANCED!
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400/30">
-              <div className="text-sm text-gray-400">
-                ESTIMATED GAS: <span className="mono text-cyan-400">{strategy.estimatedGas}</span>
-              </div>
-            </div>
-
-            <div className="flex gap-4">
-              <button
-                onClick={() => setStep('portfolio')}
-                className="btn btn-secondary flex-1 text-lg"
-              >
-                ← BACK
-              </button>
-              <button
-                onClick={handleExecuteRebalance}
-                disabled={strategy.trades.length === 0 || loading}
-                className="btn btn-primary flex-1 text-lg"
-              >
-                {loading ? 'EXECUTING...' : 'EXECUTE REBALANCING →'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-        </>
       )}
 
       {/* Loading Overlay */}
@@ -860,6 +3003,168 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* Revoke Delegation Modal */}
+      <Modal
+        isOpen={showRevokeModal}
+        onClose={() => setShowRevokeModal(false)}
+        title="REVOKE DELEGATION"
+        footer={
+          <div className="flex gap-4">
+            <button
+              onClick={() => setShowRevokeModal(false)}
+              className="btn btn-secondary flex-1"
+            >
+              CANCEL
+            </button>
+            <button
+              onClick={() => {
+                handleRevokeDelegation();
+                setShowRevokeModal(false);
+              }}
+              disabled={loading}
+              className="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg border-2 border-red-400 shadow-[0_0_20px_rgba(239,68,68,0.3)] hover:shadow-[0_0_30px_rgba(239,68,68,0.5)] transition-all disabled:opacity-50"
+            >
+              {loading ? "REVOKING..." : "REVOKE DELEGATION"}
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-lg text-gray-300">
+            Are you sure you want to revoke the delegation? The AI agent will no
+            longer be able to trade on your behalf.
+          </p>
+
+          {/* Delegation Details */}
+          <div className="bg-black/50 rounded-lg p-4 border-2 border-red-400/30 space-y-3">
+            <h3 className="font-bold text-lg text-red-400">
+              CURRENT DELEGATION
+            </h3>
+
+            <div>
+              <div className="text-sm text-gray-400 uppercase mb-1">
+                Smart Account:
+              </div>
+              <div className="mono text-sm text-cyan-400 break-all">
+                {smartAccountAddress || "Not set"}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-sm text-gray-400 uppercase mb-1">
+                Agent Address:
+              </div>
+              <div className="mono text-sm text-cyan-400 break-all">
+                {agentAddress || "Not set"}
+              </div>
+            </div>
+
+            {delegationTimestamp && (
+              <>
+                <div>
+                  <div className="text-sm text-gray-400 uppercase mb-1">
+                    Created:
+                  </div>
+                  <div className="text-sm text-white">
+                    {new Date(delegationTimestamp).toLocaleString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                      hour12: true,
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-sm text-gray-400 uppercase mb-1">
+                    Last Activity:
+                  </div>
+                  <div className="text-sm text-white">
+                    {Math.floor((Date.now() - delegationTimestamp) / 60000) < 1
+                      ? "Just now"
+                      : Math.floor((Date.now() - delegationTimestamp) / 60000) <
+                        60
+                      ? `${Math.floor(
+                          (Date.now() - delegationTimestamp) / 60000
+                        )} minutes ago`
+                      : Math.floor(
+                          (Date.now() - delegationTimestamp) / 3600000
+                        ) < 24
+                      ? `${Math.floor(
+                          (Date.now() - delegationTimestamp) / 3600000
+                        )} hours ago`
+                      : `${Math.floor(
+                          (Date.now() - delegationTimestamp) / 86400000
+                        )} days ago`}
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div>
+              <div className="text-sm text-gray-400 uppercase mb-1">
+                Permissions:
+              </div>
+              <div className="text-sm text-white">Full trading access</div>
+            </div>
+
+            <div>
+              <div className="text-sm text-gray-400 uppercase mb-1">
+                Max Trade Amount:
+              </div>
+              <div className="text-sm text-white">
+                ${delegationParams.maxTradeAmount} USD
+              </div>
+            </div>
+
+            <div>
+              <div className="text-sm text-gray-400 uppercase mb-1">
+                Daily Trade Limit:
+              </div>
+              <div className="text-sm text-white">
+                {delegationParams.maxTradesPerDay} trades/day
+              </div>
+            </div>
+
+            <div>
+              <div className="text-sm text-gray-400 uppercase mb-1">
+                Risk Level:
+              </div>
+              <div className="text-sm text-white capitalize">
+                {delegationParams.riskLevel}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-sm text-gray-400 uppercase mb-1">
+                Status:
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <span className="text-green-400 font-bold">ACTIVE</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-yellow-500/10 border-2 border-yellow-400/50 rounded-lg p-4">
+            <div className="flex gap-3">
+              <div className="w-6 h-6 border-2 border-yellow-400 rounded-full flex items-center justify-center text-yellow-400 font-bold flex-shrink-0">
+                !
+              </div>
+              <div>
+                <div className="font-bold text-yellow-400 mb-1">WARNING</div>
+                <div className="text-sm text-gray-300">
+                  This action will immediately stop the AI agent from executing
+                  trades. You can create a new delegation afterwards.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

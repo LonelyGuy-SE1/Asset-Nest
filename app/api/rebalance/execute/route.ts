@@ -33,13 +33,13 @@ export async function POST(request: NextRequest) {
 
     console.log('Smart account:', smartAccount.address);
 
-    // Get quotes for all trades
+    // Get quotes for all trades (slippage handled during execution)
     const quotePromises = trades.map((trade: RebalanceTrade) => {
       const quoteParams: MonorailQuoteParams = {
         from: trade.fromToken as Address,
         to: trade.toToken as Address,
         amount: trade.amount,
-        slippage: 0.5,
+        // slippage not used in Monorail quote API
       };
       return monorailClient.getQuote(quoteParams);
     });

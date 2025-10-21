@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
+import { ActivityLogs } from "@/components/ActivityLogs";
 
 export const metadata: Metadata = {
   title: "Asset Nest - AI Portfolio Rebalancer",
@@ -16,42 +17,23 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
+        {/* Background Image */}
+        <div
+          className="fixed inset-0 w-full h-full pointer-events-none"
+          style={{
+            backgroundImage: "url(/back.png)",
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            backgroundRepeat: "no-repeat",
+            filter: "blur(25px)",
+            opacity: 0.12,
+            zIndex: -10,
+          }}
+        />
         <Providers>
-          <div className="min-h-screen bg-black">
-            <header className="bg-black border-b-2 border-cyan-400">
-              <div className="container mx-auto px-4 py-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="text-2xl font-bold neon-text">
-                      ASSET NEST
-                    </div>
-                    <div className="text-sm text-gray-300">
-                      AI Portfolio Rebalancer on Monad
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <span className="status-dot status-success"></span>
-                    <span className="text-sm text-white">Monad Testnet</span>
-                  </div>
-                </div>
-              </div>
-            </header>
+          <div className="min-h-screen relative bg-black/90">
             <main className="container mx-auto px-4 py-8">{children}</main>
-            <footer className="bg-black border-t-2 border-cyan-400 mt-12">
-              <div className="container mx-auto px-4 py-6 text-center text-sm text-gray-300">
-                <p>
-                  Built with MetaMask Smart Accounts, Monad, Monorail, and AI |{" "}
-                  <a
-                    href="https://docs.metamask.io/delegation-toolkit"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-cyan-400 hover:underline"
-                  >
-                    Documentation
-                  </a>
-                </p>
-              </div>
-            </footer>
+            <ActivityLogs />
           </div>
         </Providers>
       </body>

@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "app/api/**/*.ts": {
+      "maxDuration": 30
+    }
+  },
+  "env": {
+    "NEXT_PUBLIC_MONAD_RPC_URL": "@monad_rpc_url",
+    "NEXT_PUBLIC_MONAD_CHAIN_ID": "@monad_chain_id",
+    "NEXT_PUBLIC_MONORAIL_API_URL": "@monorail_api_url"
+  }
+}

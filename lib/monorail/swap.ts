@@ -48,44 +48,90 @@ export class MonorailClient {
   constructor() {
     this.baseUrl =
       process.env.NEXT_PUBLIC_MONORAIL_API_URL || 'https://testnet-pathfinder.monorail.xyz';
-    this.appId = process.env.NEXT_PUBLIC_MONORAIL_APP_ID || 'asset-nest-rebalancer';
+    // Use app ID as shown in Monorail documentation (default: '0')
+    this.appId = process.env.NEXT_PUBLIC_MONORAIL_APP_ID || '0';
   }
 
   /**
-   * Get a swap quote from Monorail
-   * Reference: https://testnet-preview.monorail.xyz/developers/documentation
-   * Example: /v4/quote?source=APPID&from=0x...&to=0x...&amount=1000000
+   * Register Asset Nest with Monorail for fee sharing program
+   * Monorail offers fee sharing - bring volume, earn fees
+   */
+  async registerWithMonorail(): Promise<void> {
+    console.log('Registering Asset Nest with Monorail fee sharing program...');
+    // In production, this would register our app for fee sharing
+    // Use the provided app ID for fee sharing
+  }
+
+  /**
+   * Get a swap quote from Monorail V4 Pathfinder API
+   * Reference: https://testnet-preview.monorail.xyz/developers/api-reference/pathfinder
+   * Features: Sub-200ms response times, 15+ DEX aggregation, gasless approvals
    */
   async getQuote(params: MonorailQuoteParams): Promise<MonorailQuoteResponse> {
-    console.log('Fetching swap quote from Monorail...');
+    console.log('Fetching swap quote from Monorail V4 Pathfinder...');
     console.log('Swap params:', params);
 
     const slippage = params.slippage || 0.5;
 
     try {
-      const response = await axios.get(`${this.baseUrl}/v4/quote`, {
-        params: {
-          source: params.source || this.appId,
-          from: params.from,
-          to: params.to,
-          amount: params.amount,
-          slippage: slippage.toString(),
-        },
+      // Follow exact Monorail documentation pattern
+      // Reference: https://testnet-preview.monorail.xyz/developers/documentation
+      const quoteUrl = new URL(`${this.baseUrl}/v4/quote`);
+      quoteUrl.searchParams.set('source', params.source || this.appId);
+      quoteUrl.searchParams.set('from', params.from);
+      quoteUrl.searchParams.set('to', params.to);
+      quoteUrl.searchParams.set('amount', params.amount);
+      
+      // Note: Slippage is NOT part of the quote request based on Monorail docs
+      // It's handled during execution phase
+
+      console.log('Monorail V4 Pathfinder URL:', quoteUrl.toString());
+
+      const response = await fetch(quoteUrl.toString(), {
+        method: 'GET',
         headers: {
           'Content-Type': 'application/json',
+          'User-Agent': 'Asset-Nest/1.0.0',
+          'X-Source-App': this.appId,
         },
       });
 
-      const quote: MonorailQuoteResponse = response.data;
-      console.log('Quote received:', quote);
-
-      return quote;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('Monorail API error:', error.response?.data || error.message);
-        throw new Error(`Failed to get quote: ${error.response?.data?.message || error.message}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Monorail API error: ${response.status} ${response.statusText} - ${errorText}`);
       }
-      throw error;
+
+      const quote = await response.json();
+      console.log('Monorail V4 quote received:', {
+        fromToken: quote.fromToken,
+        toToken: quote.toToken,
+        outputFormatted: quote.output_formatted,
+        priceImpact: quote.priceImpact,
+        gasEstimate: quote.estimatedGas,
+        route: quote.route?.length || 0,
+      });
+
+      // Transform to our expected format
+      const transformedQuote: MonorailQuoteResponse = {
+        fromToken: params.from,
+        toToken: params.to,
+        fromAmount: params.amount,
+        toAmount: quote.output || quote.outputAmount || '0',
+        estimatedGas: quote.estimatedGas || '100000',
+        priceImpact: parseFloat(quote.priceImpact || '0'),
+        route: quote.route || [],
+        transaction: {
+          to: quote.transaction?.to || quote.to,
+          data: quote.transaction?.data || quote.data,
+          value: quote.transaction?.value || quote.value || '0',
+          gasLimit: quote.transaction?.gasLimit || quote.gasLimit || '300000',
+        },
+      };
+
+      return transformedQuote;
+    } catch (error: any) {
+      console.error('Monorail V4 Pathfinder error:', error);
+      throw new Error(`Failed to get V4 quote: ${error.message}`);
     }
   }
 
@@ -127,12 +173,12 @@ export class MonorailClient {
    */
   async getTokenPrice(tokenAddress: Address): Promise<number> {
     // In production, call Monorail's price API
-    // For testnet, return mock prices
+    // For testnet, return realistic mock prices (testnet tokens have no real value)
     const mockPrices: Record<string, number> = {
-      '0x0000000000000000000000000000000000000000': 1000, // MON = $1000
+      '0x0000000000000000000000000000000000000000': 1, // MON = $1 (testnet has no real value)
       '0x0000000000000000000000000000000000000001': 1, // USDC = $1
       '0x0000000000000000000000000000000000000002': 1, // USDT = $1
-      '0x0000000000000000000000000000000000000003': 2500, // WETH = $2500
+      '0x0000000000000000000000000000000000000003': 2500, // WETH = $2500 (for simulation)
     };
 
     return mockPrices[tokenAddress.toLowerCase()] || 1;
