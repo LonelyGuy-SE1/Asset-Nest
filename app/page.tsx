@@ -4,6 +4,7 @@ import { useAccount, useConnect, useDisconnect } from 'wagmi';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { privateKeyToAccount } from 'viem/accounts';
+import { getDeterministicAgentAddress } from '@/lib/utils/agent';
 
 interface Holding {
   token: string;
@@ -65,11 +66,15 @@ export default function Home() {
     setMounted(true);
   }, []);
 
-  // Auto-proceed when wallet connects
+  // Auto-proceed when wallet connects and set deterministic agent address
   useEffect(() => {
     if (isConnected && address && !smartAccountAddress && mounted) {
       setStep('setup');
       setSuccess(`Wallet connected: ${address.slice(0, 10)}...`);
+
+      // Set deterministic agent address immediately on connection
+      const deterministicAgentAddr = getDeterministicAgentAddress(address);
+      setAgentAddress(deterministicAgentAddr);
     }
   }, [isConnected, address, mounted]);
 
@@ -90,9 +95,10 @@ export default function Home() {
       setSmartAccountAddress(response.data.smartAccountAddress);
       setSuccess(`Smart Account created: ${response.data.smartAccountAddress.slice(0, 10)}...`);
 
-      // Auto-create agent address
-      const agentKey = privateKeyToAccount(`0x${Math.random().toString(16).slice(2).padStart(64, '0')}`);
-      setAgentAddress(agentKey.address);
+      // Generate deterministic agent address based on wallet address
+      // This ensures the same wallet always gets the same agent address
+      const deterministicAgentAddr = getDeterministicAgentAddress(address);
+      setAgentAddress(deterministicAgentAddr);
 
     } catch (err: any) {
       console.error('Smart account creation error:', err);
