@@ -276,6 +276,15 @@ export default function Home() {
     );
   };
 
+  // Smart decimal formatting: 3 decimals for values >= 1, 5 decimals for values < 1
+  const formatValue = (value: number): string => {
+    if (value >= 1) {
+      return value.toFixed(3);
+    } else {
+      return value.toFixed(5);
+    }
+  };
+
   if (!mounted) {
     return null; // Prevent hydration mismatch
   }
@@ -519,7 +528,7 @@ export default function Home() {
           <div className="space-y-6">
             <div className="text-center p-6 bg-black rounded-lg border-2 border-cyan-400 shadow-[0_0_30px_rgba(0,255,247,0.3)]">
               <div className="text-5xl font-bold neon-text">
-                ${totalValueUSD.toFixed(2)}
+                ${formatValue(totalValueUSD)}
               </div>
               <div className="text-gray-400 mt-2">TOTAL VALUE</div>
             </div>
@@ -537,26 +546,29 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody>
-                      {holdings.map((h) => (
-                        <tr key={h.symbol}>
-                          <td className="font-bold text-cyan-400 text-lg">{h.symbol}</td>
-                          <td className="mono">
-                            {(Number(h.balance) / 10 ** h.decimals).toFixed(6)}
-                          </td>
-                          <td className="font-bold">${h.valueUSD.toFixed(2)}</td>
-                          <td>
-                            <div className="flex items-center gap-3">
-                              <div className="flex-1 bg-black border border-cyan-400/30 rounded-full h-3 overflow-hidden">
-                                <div
-                                  className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,255,247,0.5)]"
-                                  style={{ width: `${h.percentage}%` }}
-                                ></div>
+                      {holdings.map((h) => {
+                        const balance = Number(h.balance) / 10 ** h.decimals;
+                        return (
+                          <tr key={h.symbol}>
+                            <td className="font-bold text-cyan-400 text-lg">{h.symbol}</td>
+                            <td className="mono">
+                              {formatValue(balance)}
+                            </td>
+                            <td className="font-bold">${formatValue(h.valueUSD)}</td>
+                            <td>
+                              <div className="flex items-center gap-3">
+                                <div className="flex-1 bg-black border border-cyan-400/30 rounded-full h-3 overflow-hidden">
+                                  <div
+                                    className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,255,247,0.5)]"
+                                    style={{ width: `${h.percentage}%` }}
+                                  ></div>
+                                </div>
+                                <span className="font-bold min-w-[60px]">{h.percentage.toFixed(1)}%</span>
                               </div>
-                              <span className="font-bold min-w-[60px]">{h.percentage.toFixed(1)}%</span>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
