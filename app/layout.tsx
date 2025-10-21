@@ -17,35 +17,35 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <Providers>
-          <div className="min-h-screen #000000">
-            <header className="bg-vscode-sidebar border-b #000000">
+          <div className="min-h-screen bg-black">
+            <header className="bg-black border-b-2 border-cyan-400">
               <div className="container mx-auto px-4 py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-3">
-                    <div className="text-2xl font-bold text-vscode-accent">
-                      Asset Nest
+                    <div className="text-2xl font-bold neon-text">
+                      ASSET NEST
                     </div>
-                    <div className="text-sm text-vscode-text/60">
+                    <div className="text-sm text-gray-300">
                       AI Portfolio Rebalancer on Monad
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
                     <span className="status-dot status-success"></span>
-                    <span className="text-sm">Monad Testnet</span>
+                    <span className="text-sm text-white">Monad Testnet</span>
                   </div>
                 </div>
               </div>
             </header>
             <main className="container mx-auto px-4 py-8">{children}</main>
-            <footer className="bg-vscode-sidebar border-t border-vscode-border mt-12">
-              <div className="container mx-auto px-4 py-6 text-center text-sm text-vscode-text/60">
+            <footer className="bg-black border-t-2 border-cyan-400 mt-12">
+              <div className="container mx-auto px-4 py-6 text-center text-sm text-gray-300">
                 <p>
                   Built with MetaMask Smart Accounts, Monad, Monorail, and AI |{" "}
                   <a
                     href="https://docs.metamask.io/delegation-toolkit"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-vscode-accent hover:underline"
+                    className="text-cyan-400 hover:underline"
                   >
                     Documentation
                   </a>

@@ -42,6 +42,7 @@ export default function Home() {
   const { signTypedDataAsync } = useSignTypedData();
 
   const [mounted, setMounted] = useState(false);
+  const [showHero, setShowHero] = useState(true);
   const [step, setStep] = useState<'connect' | 'setup' | 'portfolio' | 'rebalance'>('connect');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -71,6 +72,7 @@ export default function Home() {
   // Auto-proceed when wallet connects and set deterministic agent address
   useEffect(() => {
     if (isConnected && address && !smartAccountAddress && mounted) {
+      setShowHero(false);
       setStep('setup');
       setSuccess(`Wallet connected: ${address.slice(0, 10)}...`);
 
@@ -79,6 +81,21 @@ export default function Home() {
       setAgentAddress(deterministicAgentAddr);
     }
   }, [isConnected, address, mounted]);
+
+  // Handle disconnect - reset to hero page
+  const handleDisconnect = () => {
+    disconnect();
+    setShowHero(true);
+    setStep('connect');
+    setSmartAccountAddress('');
+    setAgentAddress('');
+    setDelegationCreated(false);
+    setHoldings([]);
+    setTotalValueUSD(0);
+    setStrategy(null);
+    setError('');
+    setSuccess('');
+  };
 
   const handleCreateSmartAccount = async () => {
     if (!address) return;
@@ -310,25 +327,90 @@ export default function Home() {
         </div>
       )}
 
-      {/* Step Indicator */}
-      <div className="card">
-        <div className="grid grid-cols-4 gap-2">
-          {['connect', 'setup', 'portfolio', 'rebalance'].map((s, i) => (
-            <div
-              key={s}
-              className={`text-center py-2 px-1 rounded-lg text-sm font-bold uppercase ${
-                step === s
-                  ? 'bg-black border-2 border-cyan-400 text-cyan-400 shadow-[0_0_20px_rgba(0,255,247,0.5)]'
-                  : 'bg-black border border-gray-700 text-gray-500'
-              }`}
-            >
-              {i + 1}. {s}
+      {/* Hero Landing Page */}
+      {showHero && (
+        <div className="min-h-[80vh] flex items-center justify-center fade-in">
+          <div className="max-w-4xl mx-auto text-center space-y-8">
+            {/* Title */}
+            <div className="space-y-4">
+              <h1 className="text-7xl font-bold neon-text mb-4" style={{ textShadow: '0 0 20px rgba(0,255,247,0.8), 0 0 40px rgba(0,255,247,0.5)' }}>
+                ASSET NEST
+              </h1>
+              <p className="text-3xl font-bold text-white mb-2">
+                AI-Powered Portfolio Rebalancer
+              </p>
+              <p className="text-xl text-gray-300">
+                Autonomous portfolio management on Monad using MetaMask Smart Accounts
+              </p>
             </div>
-          ))}
-        </div>
-      </div>
 
-      {/* Connect Wallet */}
+            {/* Features Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12 mb-12">
+              <div className="bg-black border-2 border-cyan-400 rounded-lg p-6 shadow-[0_0_20px_rgba(0,255,247,0.3)]">
+                <div className="text-4xl mb-3">🤖</div>
+                <h3 className="text-xl font-bold text-cyan-400 mb-2">AI Agent</h3>
+                <p className="text-gray-300 text-sm">
+                  Intelligent rebalancing strategies powered by advanced AI algorithms
+                </p>
+              </div>
+
+              <div className="bg-black border-2 border-purple-400 rounded-lg p-6 shadow-[0_0_20px_rgba(191,0,255,0.3)]">
+                <div className="text-4xl mb-3">⚡</div>
+                <h3 className="text-xl font-bold text-purple-400 mb-2">Smart Accounts</h3>
+                <p className="text-gray-300 text-sm">
+                  Gasless transactions with MetaMask Delegation Toolkit (ERC-4337)
+                </p>
+              </div>
+
+              <div className="bg-black border-2 border-green-400 rounded-lg p-6 shadow-[0_0_20px_rgba(57,255,20,0.3)]">
+                <div className="text-4xl mb-3">🚀</div>
+                <h3 className="text-xl font-bold text-green-400 mb-2">Monad L1</h3>
+                <p className="text-gray-300 text-sm">
+                  Built on Monad's high-performance blockchain infrastructure
+                </p>
+              </div>
+            </div>
+
+            {/* CTA Button */}
+            <div className="mt-12">
+              <button
+                onClick={() => setShowHero(false)}
+                className="btn btn-primary text-2xl px-12 py-6"
+                style={{ boxShadow: '0 0 40px rgba(0,255,247,0.6)' }}
+              >
+                LAUNCH APP →
+              </button>
+            </div>
+
+            {/* Info */}
+            <p className="text-sm text-gray-400 mt-8">
+              Chain ID: 10143 | Monad Testnet | ERC-7710 Delegations
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Step Indicator */}
+      {!showHero && (
+        <>
+          <div className="card">
+            <div className="grid grid-cols-4 gap-2">
+              {['connect', 'setup', 'portfolio', 'rebalance'].map((s, i) => (
+                <div
+                  key={s}
+                  className={`text-center py-2 px-1 rounded-lg text-sm font-bold uppercase ${
+                    step === s
+                      ? 'bg-black border-2 border-cyan-400 text-cyan-400 shadow-[0_0_20px_rgba(0,255,247,0.5)]'
+                      : 'bg-black border border-gray-700 text-gray-500'
+                  }`}
+                >
+                  {i + 1}. {s}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Connect Wallet */}
       {step === 'connect' && !isConnected && (
         <div className="card fade-in text-center">
           <h2 className="text-4xl font-bold mb-4 neon-text">
@@ -366,7 +448,7 @@ export default function Home() {
                 {address.slice(0, 10)}...{address.slice(-8)}
               </div>
             </div>
-            <button onClick={() => disconnect()} className="btn btn-secondary">
+            <button onClick={handleDisconnect} className="btn btn-secondary">
               DISCONNECT
             </button>
           </div>
@@ -699,6 +781,9 @@ export default function Home() {
             </div>
           </div>
         </div>
+      )}
+
+        </>
       )}
 
       {/* Loading Overlay */}
