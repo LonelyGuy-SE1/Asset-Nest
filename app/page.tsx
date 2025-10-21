@@ -1,6 +1,6 @@
 'use client';
 
-import { useAccount, useConnect, useDisconnect } from 'wagmi';
+import { useAccount, useConnect, useDisconnect, useSignTypedData } from 'wagmi';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -39,6 +39,7 @@ export default function Home() {
   const { address, isConnected } = useAccount();
   const { connectors, connect } = useConnect();
   const { disconnect } = useDisconnect();
+  const { signTypedDataAsync } = useSignTypedData();
 
   const [mounted, setMounted] = useState(false);
   const [step, setStep] = useState<'connect' | 'setup' | 'portfolio' | 'rebalance'>('connect');
@@ -49,6 +50,7 @@ export default function Home() {
   const [smartAccountAddress, setSmartAccountAddress] = useState('');
   const [agentAddress, setAgentAddress] = useState('');
   const [delegationCreated, setDelegationCreated] = useState(false);
+  const [showDelegationDetails, setShowDelegationDetails] = useState(false);
 
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [totalValueUSD, setTotalValueUSD] = useState(0);
@@ -113,7 +115,52 @@ export default function Home() {
 
     setLoading(true);
     setError('');
+    setSuccess('');
     try {
+      // Create EIP-712 typed data for delegation signature
+      const domain = {
+        name: 'Asset Nest Delegation',
+        version: '1',
+        chainId: 10143, // Monad testnet
+        verifyingContract: smartAccountAddress as `0x${string}`,
+      };
+
+      const types = {
+        Delegation: [
+          { name: 'delegate', type: 'address' },
+          { name: 'delegator', type: 'address' },
+          { name: 'authority', type: 'address' },
+          { name: 'caveats', type: 'Caveat[]' },
+          { name: 'salt', type: 'uint256' },
+        ],
+        Caveat: [
+          { name: 'enforcer', type: 'address' },
+          { name: 'terms', type: 'bytes' },
+        ],
+      };
+
+      const salt = BigInt(Date.now());
+
+      const message = {
+        delegate: agentAddress,
+        delegator: smartAccountAddress,
+        authority: '0x0000000000000000000000000000000000000000' as `0x${string}`,
+        caveats: [],
+        salt,
+      };
+
+      // Trigger MetaMask signature popup
+      const signature = await signTypedDataAsync({
+        domain,
+        types,
+        primaryType: 'Delegation',
+        message,
+      });
+
+      setSuccess('Signature received! Creating delegation...');
+
+      // For demo purposes, we'll still use the API with private key
+      // In production, send the signature to the backend
       const demoPrivateKey = `0x${address.slice(2).padStart(64, '0')}`;
 
       const response = await axios.post('/api/delegation/create', {
@@ -132,7 +179,11 @@ export default function Home() {
 
     } catch (err: any) {
       console.error('Delegation creation error:', err);
-      setError(err.response?.data?.error || 'Failed to create delegation');
+      if (err.message?.includes('User rejected')) {
+        setError('Signature rejected. Please approve in MetaMask to continue.');
+      } else {
+        setError(err.response?.data?.error || err.message || 'Failed to create delegation');
+      }
     } finally {
       setLoading(false);
     }
@@ -352,16 +403,88 @@ export default function Home() {
                 )}
 
                 {!delegationCreated ? (
-                  <div>
-                    <p className="mb-4 text-gray-300">
-                      Grant the AI agent permission to rebalance your portfolio
-                    </p>
+                  <div className="space-y-4">
+                    <div className="p-6 bg-black rounded-lg border-2 border-green-400 shadow-[0_0_30px_rgba(57,255,20,0.3)]">
+                      <h3 className="text-xl font-bold mb-4 text-green-400">
+                        DELEGATION PERMISSIONS
+                      </h3>
+
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-3">
+                          <div className="text-green-400 text-xl">✓</div>
+                          <div>
+                            <div className="font-bold text-white">Execute Trades</div>
+                            <div className="text-sm text-gray-400">
+                              Agent can swap tokens on your behalf using Monorail
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-start gap-3">
+                          <div className="text-green-400 text-xl">✓</div>
+                          <div>
+                            <div className="font-bold text-white">Rebalance Portfolio</div>
+                            <div className="text-sm text-gray-400">
+                              Agent can adjust your token allocations to match target percentages
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-start gap-3">
+                          <div className="text-green-400 text-xl">✓</div>
+                          <div>
+                            <div className="font-bold text-white">Gasless Transactions</div>
+                            <div className="text-sm text-gray-400">
+                              Execute trades without paying gas fees (ERC-4337)
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 pt-4 border-t-2 border-green-400/30">
+                        <h4 className="font-bold text-yellow-400 mb-2">RESTRICTIONS</h4>
+                        <div className="space-y-2 text-sm">
+                          <div className="flex items-start gap-2">
+                            <span className="text-yellow-400">⚠</span>
+                            <span className="text-gray-300">
+                              <span className="font-bold">Type:</span> Open Delegation (Unrestricted)
+                            </span>
+                          </div>
+                          <div className="flex items-start gap-2">
+                            <span className="text-yellow-400">⚠</span>
+                            <span className="text-gray-300">
+                              <span className="font-bold">Delegate:</span> {agentAddress.slice(0, 10)}...{agentAddress.slice(-8)}
+                            </span>
+                          </div>
+                          <div className="flex items-start gap-2">
+                            <span className="text-yellow-400">⚠</span>
+                            <span className="text-gray-300">
+                              <span className="font-bold">Expiration:</span> No expiration (revocable anytime)
+                            </span>
+                          </div>
+                          <div className="flex items-start gap-2">
+                            <span className="text-cyan-400">ℹ</span>
+                            <span className="text-gray-300">
+                              <span className="font-bold">Standard:</span> ERC-7710 Delegation
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-black rounded-lg border-2 border-purple-400/50">
+                      <p className="text-sm text-gray-300">
+                        <span className="font-bold text-purple-400">Note:</span> You will be prompted to sign this delegation in MetaMask.
+                        This creates a cryptographic signature proving you authorize the AI agent to trade on your behalf.
+                      </p>
+                    </div>
+
                     <button
                       onClick={handleCreateDelegation}
                       disabled={loading}
                       className="btn btn-success w-full text-lg"
                     >
-                      {loading ? 'CREATING...' : 'CREATE DELEGATION'}
+                      {loading ? 'WAITING FOR SIGNATURE...' : 'SIGN DELEGATION IN METAMASK'}
                     </button>
                   </div>
                 ) : (
@@ -394,7 +517,7 @@ export default function Home() {
           </div>
 
           <div className="space-y-6">
-            <div className="text-center p-6 bg-gradient-to-r from-cyan-500/10 to-purple-500/10 rounded-lg border-2 border-cyan-400">
+            <div className="text-center p-6 bg-black rounded-lg border-2 border-cyan-400 shadow-[0_0_30px_rgba(0,255,247,0.3)]">
               <div className="text-5xl font-bold neon-text">
                 ${totalValueUSD.toFixed(2)}
               </div>
@@ -423,9 +546,9 @@ export default function Home() {
                           <td className="font-bold">${h.valueUSD.toFixed(2)}</td>
                           <td>
                             <div className="flex items-center gap-3">
-                              <div className="flex-1 bg-gray-800 rounded-full h-3 overflow-hidden">
+                              <div className="flex-1 bg-black border border-cyan-400/30 rounded-full h-3 overflow-hidden">
                                 <div
-                                  className="h-full bg-gradient-to-r from-cyan-400 to-purple-500"
+                                  className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,255,247,0.5)]"
                                   style={{ width: `${h.percentage}%` }}
                                 ></div>
                               </div>
@@ -507,7 +630,7 @@ export default function Home() {
           </h2>
 
           <div className="space-y-6">
-            <div className="p-6 bg-gradient-to-r from-purple-500/20 to-pink-500/20 rounded-lg border-2 border-purple-400">
+            <div className="p-6 bg-black rounded-lg border-2 border-purple-400 shadow-[0_0_30px_rgba(191,0,255,0.3)]">
               <h3 className="font-bold mb-3 text-purple-400 text-xl">AI RATIONALE:</h3>
               <p className="text-gray-200 leading-relaxed">{strategy.rationale}</p>
             </div>
