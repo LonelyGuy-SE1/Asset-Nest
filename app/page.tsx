@@ -258,8 +258,8 @@ export default function Home() {
               key={s}
               className={`text-center py-2 px-1 rounded-lg text-sm font-bold uppercase ${
                 step === s
-                  ? 'bg-gradient-to-r from-cyan-400 to-purple-500 text-gray-900 neon-glow'
-                  : 'bg-gray-800/50 text-gray-500'
+                  ? 'bg-black border-2 border-cyan-400 text-cyan-400 shadow-[0_0_20px_rgba(0,255,247,0.5)]'
+                  : 'bg-black border border-gray-700 text-gray-500'
               }`}
             >
               {i + 1}. {s}

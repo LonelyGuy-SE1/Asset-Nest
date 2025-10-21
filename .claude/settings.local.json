@@ -37,7 +37,12 @@
       "Bash(git checkout --theirs app/globals.css)",
       "Bash(git add app/globals.css)",
       "Bash(git commit -m \"Resolve merge conflict: use pure black styling\")",
-      "Bash(git add -A)"
+      "Bash(git add -A)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nImplement deterministic agent address and fix Envio config\n\n- Add deterministic agent address generation based on wallet address\n- Agent address is now consistent for each wallet (no random generation)\n- Funds sent to agent address will always be accessible\n- Fix Envio config.yaml by removing invalid version fields\n- Version specified in package.json dependencies instead\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git merge main -m \"Merge main: deterministic agent and config fixes\")",
+      "Bash(git stash)",
+      "Bash(git stash pop)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nFix Envio config and remove gradient from step indicator\n\n- Fix Envio networks config: use rpc_config and hypersync_config\n- Remove gradient from step indicator, use pure black with cyan border\n- Step indicator now has black background with contrasting neon borders\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

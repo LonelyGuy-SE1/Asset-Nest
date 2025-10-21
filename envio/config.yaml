@@ -8,10 +8,11 @@ description: Indexes MetaMask Smart Account events and swap transactions on Mona
 # Networks configuration
 networks:
   - id: 10143
-    name: monad-testnet
-    rpc_url: https://testnet-rpc.monad.xyz
-    start_block: 0 # Start indexing from genesis or specify a recent block
-    hypersync_url: https://monad-testnet.hypersync.xyz # Monad HyperSync endpoint if available
+    rpc_config:
+      url: https://testnet-rpc.monad.xyz
+    start_block: 0
+    hypersync_config:
+      url: https://monad-testnet.hypersync.xyz
 
 # Contracts to index
 contracts:
