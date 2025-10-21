@@ -1,6 +1,6 @@
 'use client';
 
-import { useAccount, useConnect, useDisconnect, useSignTypedData } from 'wagmi';
+import { useAccount, useConnect, useDisconnect, useSignTypedData, useChainId } from 'wagmi';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -40,6 +40,7 @@ export default function Home() {
   const { connectors, connect } = useConnect();
   const { disconnect } = useDisconnect();
   const { signTypedDataAsync } = useSignTypedData();
+  const chainId = useChainId();
 
   const [mounted, setMounted] = useState(false);
   const [showHero, setShowHero] = useState(true);
@@ -97,6 +98,29 @@ export default function Home() {
     setSuccess('');
   };
 
+  // Handle revoke delegation
+  const handleRevokeDelegation = async () => {
+    if (!smartAccountAddress || !agentAddress) return;
+
+    setLoading(true);
+    setError('');
+    setSuccess('');
+    try {
+      const response = await axios.post('/api/delegation/revoke', {
+        smartAccountAddress,
+        agentAddress,
+      });
+
+      setDelegationCreated(false);
+      setSuccess('Delegation revoked successfully! You can create a new one.');
+    } catch (err: any) {
+      console.error('Delegation revoke error:', err);
+      setError(err.response?.data?.error || 'Failed to revoke delegation');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleCreateSmartAccount = async () => {
     if (!address) return;
 
@@ -138,7 +162,7 @@ export default function Home() {
       const domain = {
         name: 'Asset Nest Delegation',
         version: '1',
-        chainId: 10143, // Monad testnet
+        chainId: chainId, // Use connected wallet's chainId
         verifyingContract: smartAccountAddress as `0x${string}`,
       };
 
@@ -579,13 +603,53 @@ export default function Home() {
                     </button>
                   </div>
                 ) : (
-                  <button
-                    onClick={fetchPortfolio}
-                    disabled={loading}
-                    className="btn btn-primary w-full text-lg"
-                  >
-                    CONTINUE TO PORTFOLIO →
-                  </button>
+                  <div className="space-y-4">
+                    <div className="p-6 bg-black rounded-lg border-2 border-green-400 shadow-[0_0_30px_rgba(57,255,20,0.3)]">
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="text-green-400 text-3xl">✓</div>
+                        <div>
+                          <h3 className="text-xl font-bold text-green-400">
+                            DELEGATION ACTIVE
+                          </h3>
+                          <p className="text-sm text-gray-300">
+                            AI agent is authorized to rebalance your portfolio
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 text-sm border-t-2 border-green-400/30 pt-4 mt-4">
+                        <div className="flex justify-between">
+                          <span className="text-gray-400">Agent Address:</span>
+                          <span className="mono text-green-400">{agentAddress.slice(0, 10)}...{agentAddress.slice(-8)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-400">Smart Account:</span>
+                          <span className="mono text-green-400">{smartAccountAddress.slice(0, 10)}...{smartAccountAddress.slice(-8)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-400">Status:</span>
+                          <span className="text-green-400 font-bold">Active</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <button
+                        onClick={handleRevokeDelegation}
+                        disabled={loading}
+                        className="btn btn-danger text-lg"
+                      >
+                        {loading ? 'REVOKING...' : 'REVOKE DELEGATION'}
+                      </button>
+                      <button
+                        onClick={fetchPortfolio}
+                        disabled={loading}
+                        className="btn btn-primary text-lg"
+                      >
+                        CONTINUE TO PORTFOLIO →
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
