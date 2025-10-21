@@ -18,7 +18,7 @@ export default function RootLayout({
       <body>
         <Providers>
           <div className="min-h-screen #000000">
-            <header className="bg-vscode-sidebar border-b border-vscode-border">
+            <header className="bg-vscode-sidebar border-b #000000">
               <div className="container mx-auto px-4 py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-3">
