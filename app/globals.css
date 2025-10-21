@@ -23,7 +23,7 @@
 }
 
 body {
-  background: var(--bg-black);
+  background: #000000;
   color: var(--text-white);
   font-family: 'Segoe UI', 'Roboto', sans-serif;
   line-height: 1.6;
@@ -33,22 +33,16 @@ body {
 /* Neon Border Effects */
 .neon-border {
   border: 2px solid var(--neon-cyan);
-  box-shadow:
-    0 0 10px var(--neon-cyan),
-    inset 0 0 10px rgba(0, 255, 247, 0.1);
+  box-shadow: 0 0 10px var(--neon-cyan);
 }
 
 .neon-text {
   color: var(--neon-cyan);
-  text-shadow:
-    0 0 10px var(--neon-cyan),
-    0 0 20px var(--neon-cyan);
+  text-shadow: 0 0 10px var(--neon-cyan), 0 0 20px var(--neon-cyan);
 }
 
 .neon-glow {
-  box-shadow:
-    0 0 20px var(--neon-cyan),
-    0 0 40px var(--neon-cyan);
+  box-shadow: 0 0 20px var(--neon-cyan), 0 0 40px var(--neon-cyan);
 }
 
 /* Scrollbar */
@@ -57,7 +51,7 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-dark);
+  background: #000000;
 }
 
 ::-webkit-scrollbar-thumb {
@@ -74,20 +68,20 @@ body {
 }
 
 .btn-primary {
-  background: var(--bg-black);
+  background: #000000;
   color: var(--neon-cyan);
   border: 2px solid var(--neon-cyan);
   box-shadow: 0 0 20px rgba(0, 255, 247, 0.5);
 }
 
 .btn-primary:hover {
-  background: rgba(0, 255, 247, 0.1);
+  background: #000000;
   box-shadow: 0 0 30px rgba(0, 255, 247, 0.8);
   transform: translateY(-2px);
 }
 
 .btn-primary:disabled {
-  background: var(--bg-dark);
+  background: #000000;
   border-color: #666;
   color: #666;
   box-shadow: none;
@@ -96,44 +90,44 @@ body {
 }
 
 .btn-secondary {
-  background: var(--bg-black);
+  background: #000000;
   color: var(--neon-pink);
   border: 2px solid var(--neon-pink);
   box-shadow: 0 0 10px rgba(255, 0, 255, 0.5);
 }
 
 .btn-secondary:hover {
-  background: rgba(255, 0, 255, 0.1);
+  background: #000000;
   box-shadow: 0 0 20px rgba(255, 0, 255, 0.8);
 }
 
 .btn-success {
-  background: var(--bg-black);
+  background: #000000;
   color: var(--neon-green);
   border: 2px solid var(--neon-green);
   box-shadow: 0 0 20px rgba(57, 255, 20, 0.5);
 }
 
 .btn-success:hover {
-  background: rgba(57, 255, 20, 0.1);
+  background: #000000;
   box-shadow: 0 0 30px rgba(57, 255, 20, 0.8);
 }
 
 .btn-danger {
-  background: var(--bg-black);
+  background: #000000;
   color: #ff006e;
   border: 2px solid #ff006e;
   box-shadow: 0 0 20px rgba(255, 0, 110, 0.5);
 }
 
 .btn-danger:hover {
-  background: rgba(255, 0, 110, 0.1);
+  background: #000000;
   box-shadow: 0 0 30px rgba(255, 0, 110, 0.8);
 }
 
 /* Cards */
 .card {
-  background: var(--bg-black);
+  background: #000000;
   border: 2px solid var(--neon-cyan);
   border-radius: 12px;
   padding: 2rem;
@@ -144,7 +138,7 @@ body {
 input,
 select,
 textarea {
-  background: var(--bg-black);
+  background: #000000;
   color: var(--text-white);
   border: 2px solid var(--neon-cyan);
   border-radius: 8px;
@@ -252,7 +246,7 @@ tr:hover {
 /* Code/Monospace */
 .mono {
   font-family: 'Courier New', Courier, monospace;
-  background: var(--bg-panel);
+  background: #000000;
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 0.9em;
@@ -261,16 +255,16 @@ tr:hover {
 
 /* Layout Styles */
 .vscode-bg {
-  background: var(--bg-black);
+  background: #000000;
 }
 
 .vscode-sidebar {
-  background: var(--bg-dark);
-  border: 1px solid var(--bg-panel);
+  background: #000000;
+  border: 1px solid var(--neon-cyan);
 }
 
 .vscode-panel {
-  background: var(--bg-panel);
+  background: #000000;
 }
 
 .vscode-accent {
@@ -286,13 +280,13 @@ tr:hover {
 }
 
 .vscode-error {
-  background: var(--bg-black);
+  background: #000000;
   border: 2px solid #ff006e;
   color: #ff006e;
 }
 
 .vscode-success {
-  background: var(--bg-black);
+  background: #000000;
   border: 2px solid var(--neon-green);
   color: var(--neon-green);
 }

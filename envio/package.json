@@ -1,0 +1,14 @@
+{
+  "name": "asset-nest-indexer",
+  "version": "1.0.0",
+  "description": "Envio HyperIndex for Asset Nest on Monad",
+  "scripts": {
+    "dev": "envio dev",
+    "codegen": "envio codegen",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "dependencies": {
+    "envio": "2.30.1"
+  },
+  "devDependencies": {}
+}
