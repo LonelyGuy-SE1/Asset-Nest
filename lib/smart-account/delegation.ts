@@ -88,10 +88,11 @@ export async function createOpenDelegationForAgent(
       to: agentAddress, // AI agent address
       from: smartAccountAddress, // Smart account address
       environment: environment,
-      // Using functionCall scope for maximum flexibility in trading
-      // This allows calling any function on any contract
+      // Using nativeTokenTransferAmount scope for basic trading operations
+      // This allows native token transfers with amount limits
       scope: {
-        type: "functionCall", // Allow function calls (most flexible for DEX interactions)
+        type: "nativeTokenTransferAmount", // Allow native token transfers (MON/ETH)
+        amount: "1000000000000000000000", // 1000 MON max per delegation
       },
     });
 

@@ -145,13 +145,9 @@ export async function GET(request: NextRequest) {
       balance: string;
     }>;
 
-    // Get token prices
-    const prices = await Promise.all([
-      monorailClient.getTokenPrice(MONAD_TOKENS.MON as Address),
-      monorailClient.getTokenPrice(MONAD_TOKENS.USDC as Address),
-      monorailClient.getTokenPrice(MONAD_TOKENS.USDT as Address),
-      monorailClient.getTokenPrice(MONAD_TOKENS.WETH as Address),
-    ]);
+    // TODO: Implement price fetching via Monorail or external API
+    // For now, using mock prices for demo purposes
+    const prices = [1.0, 1.0, 1.0, 2500.0]; // MON, USDC, USDT, WETH mock prices
 
     // Helper function to safely handle large numbers
     const calculateValueUSD = (balance: string, decimals: number, price: number): number => {

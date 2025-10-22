@@ -50,7 +50,8 @@ function RebalanceTimer({
 }) {
   const [timeLeft, setTimeLeft] = useState<string>("");
   const [isOverdue, setIsOverdue] = useState(false);
-  const [hasTriggeredAutoRebalance, setHasTriggeredAutoRebalance] = useState(false);
+  const [hasTriggeredAutoRebalance, setHasTriggeredAutoRebalance] =
+    useState(false);
 
   useEffect(() => {
     const updateTimer = () => {
@@ -69,8 +70,12 @@ function RebalanceTimer({
 
       if (diff <= 0) {
         setIsOverdue(true);
-        
-        if (autoRebalanceEnabled && !hasTriggeredAutoRebalance && !isAutoRebalancing) {
+
+        if (
+          autoRebalanceEnabled &&
+          !hasTriggeredAutoRebalance &&
+          !isAutoRebalancing
+        ) {
           setTimeLeft("Triggering auto-rebalance...");
           setHasTriggeredAutoRebalance(true);
           // Trigger auto rebalance
@@ -78,7 +83,11 @@ function RebalanceTimer({
         } else if (isAutoRebalancing) {
           setTimeLeft("Auto-rebalancing in progress...");
         } else {
-          setTimeLeft(autoRebalanceEnabled ? "Auto-rebalance ready" : "Manual rebalance needed");
+          setTimeLeft(
+            autoRebalanceEnabled
+              ? "Auto-rebalance ready"
+              : "Manual rebalance needed"
+          );
         }
         return;
       }
@@ -96,11 +105,20 @@ function RebalanceTimer({
     const interval = setInterval(updateTimer, 1000);
 
     return () => clearInterval(interval);
-  }, [intervalHours, lastRebalanceTime, autoRebalanceEnabled, hasTriggeredAutoRebalance, isAutoRebalancing, onAutoRebalance]);
+  }, [
+    intervalHours,
+    lastRebalanceTime,
+    autoRebalanceEnabled,
+    hasTriggeredAutoRebalance,
+    isAutoRebalancing,
+    onAutoRebalance,
+  ]);
 
   return (
     <div>
-      <p className={`font-mono ${isOverdue ? "text-red-400" : "text-cyan-400"}`}>
+      <p
+        className={`font-mono ${isOverdue ? "text-red-400" : "text-cyan-400"}`}
+      >
         Next rebalance: {timeLeft}
       </p>
       {autoRebalanceEnabled && (
@@ -1069,7 +1087,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
 
         // Update last rebalance time
         setLastRebalanceTime(new Date());
-        
+
         // Refresh portfolio after successful execution
         await fetchPortfolio();
       } else {
@@ -1129,12 +1147,12 @@ By signing this message, I grant permission for the AI agent to execute trades w
         "AUTO_REBALANCE",
         "🤖 Generating rebalancing strategy for auto-execution..."
       );
-      
+
       try {
         await handleComputeStrategy();
         // Wait a moment for strategy to be set
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
         // Check if strategy was generated
         if (!strategy) {
           throw new Error("Failed to generate rebalancing strategy");
@@ -1164,7 +1182,8 @@ By signing this message, I grant permission for the AI agent to execute trades w
       setSelectedTrades(allTradeIndexes);
 
       // Generate deterministic agent private key for delegation
-      const deterministicAgentPrivateKey = getDeterministicAgentPrivateKey(address);
+      const deterministicAgentPrivateKey =
+        getDeterministicAgentPrivateKey(address);
 
       console.log("🤖 Auto-executing all trades via Smart Account Delegation");
       console.log("Smart Account:", smartAccountAddress);
@@ -1189,7 +1208,10 @@ By signing this message, I grant permission for the AI agent to execute trades w
 
         let successMessage = `🤖 Auto-rebalance completed! Executed ${strategy.trades.length} trades.`;
         if (response.data.transactionHash) {
-          successMessage += ` TX: ${response.data.transactionHash.slice(0, 10)}...`;
+          successMessage += ` TX: ${response.data.transactionHash.slice(
+            0,
+            10
+          )}...`;
         }
 
         setSuccess(successMessage);
@@ -1203,11 +1225,9 @@ By signing this message, I grant permission for the AI agent to execute trades w
         // Clear the strategy since it's been executed
         setStrategy(null);
         setSelectedTrades([]);
-
       } else {
         throw new Error("Auto-rebalance execution failed");
       }
-
     } catch (err: any) {
       console.error("❌ Auto-rebalance error:", err);
 
@@ -1227,7 +1247,6 @@ By signing this message, I grant permission for the AI agent to execute trades w
       );
 
       setError(`Auto-rebalance failed: ${errorMessage}`);
-
     } finally {
       setIsAutoRebalancing(false);
     }
@@ -2916,21 +2935,26 @@ By signing this message, I grant permission for the AI agent to execute trades w
                             onAutoRebalance={handleAutoRebalance}
                             isAutoRebalancing={isAutoRebalancing}
                           />
-                          
+
                           {/* Auto-Rebalance Toggle */}
                           <div className="mt-4 p-3 bg-gray-900/50 rounded border border-cyan-400/30">
                             <div className="flex items-center justify-between">
                               <div>
-                                <h4 className="font-bold text-cyan-400">Auto-Rebalance</h4>
+                                <h4 className="font-bold text-cyan-400">
+                                  Auto-Rebalance
+                                </h4>
                                 <p className="text-xs text-gray-400">
-                                  Automatically execute rebalancing when timer expires
+                                  Automatically execute rebalancing when timer
+                                  expires
                                 </p>
                               </div>
                               <label className="relative inline-flex items-center cursor-pointer">
                                 <input
                                   type="checkbox"
                                   checked={autoRebalanceEnabled}
-                                  onChange={(e) => setAutoRebalanceEnabled(e.target.checked)}
+                                  onChange={(e) =>
+                                    setAutoRebalanceEnabled(e.target.checked)
+                                  }
                                   className="sr-only peer"
                                 />
                                 <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-600"></div>
@@ -2938,7 +2962,8 @@ By signing this message, I grant permission for the AI agent to execute trades w
                             </div>
                             {autoRebalanceEnabled && (
                               <p className="text-xs text-green-400 mt-2">
-                                🤖 Trades will be executed automatically using your delegation
+                                🤖 Trades will be executed automatically using
+                                your delegation
                               </p>
                             )}
                           </div>
