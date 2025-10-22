@@ -41,6 +41,8 @@ export interface RebalanceStrategy {
   trades: RebalanceTrade[];
   rationale: string;
   estimatedGas: string;
+  confidenceScore?: number;
+  riskLevel?: 'Low' | 'Medium' | 'High';
 }
 
 /**
@@ -147,9 +149,11 @@ export class CrestalRebalancer {
 
   async computeRebalancingTrades(
     holdings: PortfolioHolding[],
-    targets: PortfolioTarget[]
+    targets: PortfolioTarget[],
+    riskAppetite: 'low' | 'medium' | 'high' = 'medium'
   ): Promise<RebalanceStrategy> {
     console.log('Computing rebalancing trades with Crestal AI Agent...');
+    console.log('Risk appetite:', riskAppetite);
 
     const totalValue = holdings.reduce((sum, h) => sum + h.valueUSD, 0);
 
@@ -167,26 +171,24 @@ export class CrestalRebalancer {
       const monLiquidity = parseFloat((h as any).monValue || '0');
 
       return `Token ${i + 1}: ${h.symbol} (${h.name || 'Unknown'})
-- Value: $${h.valueUSD.toFixed(2)} (${allocation.toFixed(1)}% of portfolio)
-- Balance: ${balance.toFixed(6)} tokens at $${priceUSD.toFixed(6)}/token
+- Portfolio Allocation: ${allocation.toFixed(2)}%
+- Balance: ${balance.toFixed(6)} tokens
 - Contract: ${h.token}
 - Price Confidence: ${confidence}% ${confidence >= 97 ? 'HIGH' : confidence >= 50 ? 'MEDIUM' : 'LOW'}
-- Status: ${isFake ? 'FAKE TOKEN' : isVerified ? 'VERIFIED' : 'Unverified'}
+- Status: ${isFake ? 'FAKE TOKEN' : isVerified ? 'VERIFIED' : 'Unverified'}  
 - Categories: ${(h as any).categories?.join(', ') || 'none'}
-- MON Liquidity Pool: ${monLiquidity.toFixed(4)} MON ${monLiquidity < 1 ? 'LOW LIQUIDITY' : 'Good'}
+- MON Liquidity Pool: ${monLiquidity.toFixed(4)} MON ${monLiquidity < 1 ? 'LOW LIQUIDITY' : 'Adequate'}
 - MON Exchange Rate: ${parseFloat((h as any).monPerToken || '0').toFixed(8)} MON/token`;
     }).join('\n\n');
 
-    // Prepare COMPREHENSIVE detailed prompt with ALL Monorail data
-    const prompt = `You are an expert DeFi portfolio rebalancer and risk analyst. Analyze this Monad testnet portfolio.
+    const prompt = `You are a professional DeFi portfolio optimization agent. Conduct a comprehensive analysis of this Monad testnet portfolio and provide precise rebalancing recommendations.
 
-PORTFOLIO OVERVIEW:
-Total Value: $${totalValue.toFixed(2)} USD
-Token Count: ${holdings.length} tokens
+PORTFOLIO COMPOSITION:
+Token Count: ${holdings.length} assets
 Blockchain: Monad Testnet (Chain ID: 10143)
-DEX: Monorail
+DEX Protocol: Monorail
 
-CURRENT HOLDINGS - DETAILED ANALYSIS:
+DETAILED ASSET ANALYSIS:
 ${holdingsAnalysis}
 
 ${isAutoAllocate ? 'TASK: OPTIMAL AUTO-ALLOCATION' : 'TARGET ALLOCATION'}:
@@ -196,45 +198,69 @@ ${isAutoAllocate
 - Liquidity depth and confidence scores
 - Market trends and token quality (verified vs unverified)
 - Diversification principles
-- Elimination of fake/low-quality tokens
+- Portfolio optimization best practices
 
-Provide recommended percentage allocations for each safe token.`
+Provide specific trade recommendations with EXACT amounts.`
   : targets.map(t => `${t.symbol}: ${t.targetPercentage}%`).join('\n')
 }
 
+RISK APPETITE: ${riskAppetite.toUpperCase()}
+${riskAppetite === 'low' 
+  ? '- Conservative approach: Only trade verified tokens with confidence >= 97%\n- Minimize trade frequency and amounts\n- Prefer stable allocations and avoid speculative tokens' 
+  : riskAppetite === 'high'
+  ? '- Aggressive approach: Consider higher-risk tokens for potential gains\n- Larger trade amounts acceptable\n- More frequent rebalancing for optimization'
+  : '- Balanced approach: Mix of verified and promising tokens\n- Moderate trade sizes\n- Standard rebalancing thresholds'
+}
+
+TRADING PARAMETERS:
+1. **PRECISE AMOUNTS**: Specify exact token quantities (e.g., "1.5", "0.0025", "100") - no percentages
+2. **TOKEN-BASED ANALYSIS**: Focus on token balances, allocations, and exchange rates
+3. **THRESHOLD-AGNOSTIC**: Consider any trade that enhances portfolio optimization (adjusted for risk appetite)
+4. **CONTRACT PRECISION**: Use exact token contract addresses from asset inventory
+5. **BALANCE CONSTRAINTS**: Ensure proposed amounts remain within available token balances
+6. **RISK ALIGNMENT**: Align trade recommendations with ${riskAppetite} risk appetite
+
 ANALYSIS GUIDELINES:
-CRITICAL RULES:
+SAFETY RULES:
 1. NEVER trade or recommend FAKE tokens
-2. AVOID tokens with confidence < 50%
-3. AVOID tokens with liquidity < 1 MON
+2. Prioritize tokens with confidence >= 97% (HIGH confidence)
+3. Consider liquidity depth for trade execution
+4. Balance risk across verified assets
 
 OPTIMIZATION GOALS:
 1. Maximize portfolio stability and diversification
-2. Prioritize high-confidence tokens (>=97%)
-3. Consider liquidity depth for trade execution
-4. Minimize number of trades (reduce gas costs)
-5. Balance risk across verified assets
+2. Improve allocation balance with precise amounts
+3. Consider all available tokens for potential trades
+4. Make strategic decisions based on token quality and market data
 
-CRITICAL: YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN, NO CODE BLOCKS, NO EXPLANATION TEXT.
-START YOUR RESPONSE WITH { AND END WITH }
+CRITICAL REQUIREMENTS:
+1. **EXACT TOKEN AMOUNTS**: Provide precise decimal numbers (e.g., "1.5", "0.0025", "100.0") - no percentages
+2. **BALANCE VALIDATION**: NEVER exceed available token balances - check each token's balance before suggesting trades
+3. **CONFIDENCE SCORE**: Rate your analysis confidence (1-100) based on data quality and market conditions  
+4. **RISK ASSESSMENT**: Classify portfolio risk level as "Low", "Medium", or "High"
+5. **REALISTIC AMOUNTS**: Ensure amounts don't exceed available balances (leave small buffer for gas/fees)
+6. **PRECISION**: Round to appropriate decimal places (6 decimals max)
+7. **BALANCE CHECK**: For each trade, verify: amount <= available_balance * 0.95 (5% buffer)
 
-REQUIRED JSON FORMAT:
+REQUIRED JSON FORMAT (NO MARKDOWN, NO CODE BLOCKS):
 {
   "trades": [
     {
       "fromToken": "0xcontract_address",
-      "toToken": "0xcontract_address",
+      "toToken": "0xcontract_address", 
       "fromSymbol": "TOKEN1",
       "toSymbol": "TOKEN2",
-      "amount": "0.5",
-      "reason": "why this trade"
+      "amount": "1.5",
+      "reason": "Specific explanation for this exact trade amount"
     }
   ],
-  "rationale": "Your detailed analysis explaining the portfolio health, risks, and why these trades were recommended",
-  "estimatedGas": "0.01 ETH"
+  "rationale": "Detailed analysis explaining portfolio health, risks, and strategic reasoning for these exact trades",
+  "confidenceScore": 85,
+  "riskLevel": "Medium",
+  "estimatedGas": "0.02 MON"
 }
 
-PROVIDE AT LEAST 2-3 TRADES IF THE PORTFOLIO NEEDS REBALANCING.`;
+MAKE STRATEGIC TRADES WITH EXACT AMOUNTS TO OPTIMIZE THE PORTFOLIO.`;
 
     const analysisRequest = {
       prompt: prompt,
@@ -323,11 +349,13 @@ PROVIDE AT LEAST 2-3 TRADES IF THE PORTFOLIO NEEDS REBALANCING.`;
         console.error('[CRESTAL] No JSON found in AI response');
       }
 
-      // Parse into our strategy format - ALWAYS show Crestal's message!
+      // Parse into our strategy format - ALWAYS show AI agent's analysis!
       const strategy: RebalanceStrategy = {
         trades: parsedData.trades || [],
         rationale: parsedData.rationale || aiContent || 'AI-generated rebalancing strategy',
-        estimatedGas: parsedData.estimatedGas || '0.01 ETH',
+        confidenceScore: parsedData.confidenceScore || 80,
+        riskLevel: parsedData.riskLevel || 'Medium',
+        estimatedGas: parsedData.estimatedGas || '0.001 MON',
       };
 
       console.log('[CRESTAL] Final strategy:', {
@@ -433,7 +461,9 @@ PROVIDE AT LEAST 2-3 TRADES IF THE PORTFOLIO NEEDS REBALANCING.`;
     return {
       trades,
       rationale: 'Simple greedy rebalancing to match target allocations',
-      estimatedGas: '0.001 ETH',
+      confidenceScore: 75,
+      riskLevel: 'Medium' as const,
+      estimatedGas: '0.001 MON',
     };
   }
 }

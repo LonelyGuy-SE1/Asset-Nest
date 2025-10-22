@@ -127,8 +127,6 @@ export async function approveToken(
     throw new Error('amount is required');
   }
 
-  console.log('approveToken called with:', { tokenAddress, spenderAddress, amount: amount.toString() });
-
   try {
     // Use a much simpler approach with pre-built transaction
     // Let MetaMask handle the encoding
@@ -141,17 +139,12 @@ export async function approveToken(
       gas: '0x15f90', // 90000 gas
     };
     
-    console.log('Simplified approval params:', txParams);
-    
     const txHash = await window.ethereum.request({
       method: 'eth_sendTransaction',
       params: [txParams]
     });
-    
-    console.log('Approval transaction sent:', txHash);
     return txHash;
   } catch (error: any) {
-    console.error('Approval error details:', error);
     const errorMessage = error?.message || error?.toString() || 'Unknown error';
     throw new Error(`Approval failed: ${errorMessage}`);
   }

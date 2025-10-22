@@ -10,7 +10,10 @@ import {
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { privateKeyToAccount } from "viem/accounts";
-import { getDeterministicAgentAddress } from "@/lib/utils/agent";
+import {
+  getDeterministicAgentAddress,
+  getDeterministicAgentPrivateKey,
+} from "@/lib/utils/agent";
 import {
   formatNumber,
   formatUSD,
@@ -19,7 +22,8 @@ import {
 } from "@/lib/utils/format";
 import { formatTokenAmount } from "@/lib/monorail/swap";
 import { activityLogger } from "@/lib/utils/activity-logger";
-import { assetNestIndexer } from "@/lib/indexing/asset-nest-indexer";
+import { swapHistory } from "@/lib/utils/swap-history";
+import { formatGasEstimate } from "@/lib/utils/gas-utils";
 import { Modal, ConfirmModal, CopyButton } from "@/components/Modal";
 import { getStoredDelegation } from "@/lib/smart-account/delegation";
 
@@ -28,6 +32,84 @@ declare global {
   interface Window {
     ethereum?: any;
   }
+}
+
+// Rebalance Timer Component
+function RebalanceTimer({
+  intervalHours,
+  lastRebalanceTime,
+  autoRebalanceEnabled,
+  onAutoRebalance,
+  isAutoRebalancing,
+}: {
+  intervalHours: number;
+  lastRebalanceTime: Date | null;
+  autoRebalanceEnabled: boolean;
+  onAutoRebalance: () => Promise<void>;
+  isAutoRebalancing: boolean;
+}) {
+  const [timeLeft, setTimeLeft] = useState<string>("");
+  const [isOverdue, setIsOverdue] = useState(false);
+  const [hasTriggeredAutoRebalance, setHasTriggeredAutoRebalance] = useState(false);
+
+  useEffect(() => {
+    const updateTimer = () => {
+      if (!lastRebalanceTime) {
+        setTimeLeft("Manual trigger required");
+        setIsOverdue(false);
+        setHasTriggeredAutoRebalance(false);
+        return;
+      }
+
+      const nextRebalance = new Date(
+        lastRebalanceTime.getTime() + intervalHours * 60 * 60 * 1000
+      );
+      const now = new Date();
+      const diff = nextRebalance.getTime() - now.getTime();
+
+      if (diff <= 0) {
+        setIsOverdue(true);
+        
+        if (autoRebalanceEnabled && !hasTriggeredAutoRebalance && !isAutoRebalancing) {
+          setTimeLeft("Triggering auto-rebalance...");
+          setHasTriggeredAutoRebalance(true);
+          // Trigger auto rebalance
+          onAutoRebalance().catch(console.error);
+        } else if (isAutoRebalancing) {
+          setTimeLeft("Auto-rebalancing in progress...");
+        } else {
+          setTimeLeft(autoRebalanceEnabled ? "Auto-rebalance ready" : "Manual rebalance needed");
+        }
+        return;
+      }
+
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+      setTimeLeft(`${hours}h ${minutes}m ${seconds}s`);
+      setIsOverdue(false);
+      setHasTriggeredAutoRebalance(false);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(interval);
+  }, [intervalHours, lastRebalanceTime, autoRebalanceEnabled, hasTriggeredAutoRebalance, isAutoRebalancing, onAutoRebalance]);
+
+  return (
+    <div>
+      <p className={`font-mono ${isOverdue ? "text-red-400" : "text-cyan-400"}`}>
+        Next rebalance: {timeLeft}
+      </p>
+      {autoRebalanceEnabled && (
+        <p className="text-xs text-green-400 mt-1">
+          🤖 Auto-rebalance enabled {isAutoRebalancing && "(running...)"}
+        </p>
+      )}
+    </div>
+  );
 }
 
 interface Holding {
@@ -81,6 +163,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [lastRebalanceTime, setLastRebalanceTime] = useState<Date | null>(null);
+  const [autoRebalanceEnabled, setAutoRebalanceEnabled] = useState(false);
+  const [isAutoRebalancing, setIsAutoRebalancing] = useState(false);
 
   // Notification system
   const [notifications, setNotifications] = useState<
@@ -119,6 +204,7 @@ export default function Home() {
     { symbol: "WETH", targetPercentage: 10 },
   ]);
   const [strategy, setStrategy] = useState<Strategy | null>(null);
+  const [selectedTrades, setSelectedTrades] = useState<number[]>([]);
 
   // AI Analysis state
   const [aiAnalysis, setAiAnalysis] = useState<{
@@ -592,6 +678,72 @@ By signing this message, I grant permission for the AI agent to execute trades w
     timestamp: number;
   } | null>(null);
 
+  // Background balance refresh after swaps
+  const refreshBalancesInBackground = async (swapDetails?: {
+    fromToken: string;
+    toToken: string;
+    amount: string;
+  }) => {
+    try {
+      console.log("🔄 Refreshing balances in background...");
+
+      // Don't show loading state - this runs silently
+      const response = await axios.get(
+        `/api/portfolio/balances?address=${address}&source=monorail`
+      );
+
+      if (response.data.success) {
+        // Update holdings silently
+        const freshHoldings = response.data.holdings;
+        setHoldings(freshHoldings);
+        setTotalValueUSD(response.data.totalValueUSD);
+
+        // Update cache
+        setPortfolioCache({
+          address: address!,
+          data: {
+            holdings: freshHoldings,
+            totalValueUSD: response.data.totalValueUSD,
+          },
+          timestamp: Date.now(),
+        });
+
+        // Log the refresh
+        activityLogger.info(
+          "PORTFOLIO",
+          "Background refresh completed",
+          `Updated balances for ${freshHoldings.length} tokens`
+        );
+
+        // If specific swap details provided, log the changes
+        if (swapDetails) {
+          const fromToken = freshHoldings.find(
+            (h: any) =>
+              h.address?.toLowerCase() === swapDetails.fromToken.toLowerCase()
+          );
+          const toToken = freshHoldings.find(
+            (h: any) =>
+              h.address?.toLowerCase() === swapDetails.toToken.toLowerCase()
+          );
+
+          if (fromToken || toToken) {
+            console.log("📊 Post-swap balances updated:", {
+              fromToken: fromToken
+                ? `${fromToken.symbol}: ${fromToken.balance}`
+                : "Not found",
+              toToken: toToken
+                ? `${toToken.symbol}: ${toToken.balance}`
+                : "Not found",
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.warn("Background balance refresh failed:", error);
+      // Don't show user error - this is background
+    }
+  };
+
   const fetchPortfolio = async (forceRefresh = false) => {
     // ALWAYS fetch from your wallet address (where your funds actually are)
     // The smart account is just for delegation, funds stay in your wallet
@@ -644,17 +796,12 @@ By signing this message, I grant permission for the AI agent to execute trades w
         timestamp: now,
       });
 
-      // Create portfolio snapshot for indexing (Envio pattern)
-      await assetNestIndexer.createPortfolioSnapshot(targetAddr, {
-        totalValueUSD: response.data.totalValueUSD,
-        tokens: response.data.holdings.map((h: any) => ({
-          address: h.token,
-          symbol: h.symbol,
-          balance: h.balance,
-          valueUSD: h.valueUSD,
-          percentage: h.percentage,
-        })),
-      });
+      // Portfolio loaded successfully
+      console.log(
+        "Portfolio loaded with",
+        response.data.holdings.length,
+        "tokens"
+      );
 
       const tokenCount =
         response.data.tokenCount || response.data.holdings?.length || 0;
@@ -726,9 +873,18 @@ By signing this message, I grant permission for the AI agent to execute trades w
         })),
         // No targets - let AI decide optimal allocation
         autoAllocate: true,
+        riskAppetite: delegationParams.riskLevel, // Pass user's risk appetite from delegation settings
       });
 
       setStrategy(response.data.strategy);
+
+      // Initialize all trades as selected by default
+      setSelectedTrades(
+        Array.from(
+          { length: response.data.strategy.trades.length },
+          (_, i) => i
+        )
+      );
 
       // Update AI analysis with results
       setAiAnalysis({
@@ -773,45 +929,307 @@ By signing this message, I grant permission for the AI agent to execute trades w
     }
   };
 
+  // Helper function to execute individual swap from rebalancing
+  const executeIndividualSwap = async (instruction: any) => {
+    if (!address) throw new Error("Wallet not connected");
+
+    console.log("Executing individual swap:", instruction);
+
+    // Get quote using existing quote API
+    const quoteResponse = await axios.get("/api/swap/quote", {
+      params: {
+        fromToken: instruction.fromToken,
+        toToken: instruction.toToken,
+        amount: instruction.amount,
+        sender: address,
+      },
+    });
+
+    if (!quoteResponse.data?.quote) {
+      throw new Error("Failed to get swap quote");
+    }
+
+    const quote = quoteResponse.data.quote;
+
+    // Execute using existing swap execute API
+    const executeResponse = await axios.post("/api/swap/execute", {
+      fromToken: instruction.fromToken,
+      toToken: instruction.toToken,
+      amount: instruction.amount,
+      fromAddress: address,
+      slippage: "0.5", // Use default slippage
+    });
+
+    if (!executeResponse.data?.transaction) {
+      throw new Error("Failed to prepare swap transaction");
+    }
+
+    const transaction = executeResponse.data.transaction;
+
+    // Send transaction via MetaMask
+    const txHash = await window.ethereum.request({
+      method: "eth_sendTransaction",
+      params: [
+        {
+          from: address,
+          to: transaction.to,
+          data: transaction.data,
+          value: transaction.value,
+          gas: transaction.gasLimit,
+        },
+      ],
+    });
+
+    console.log(`Swap transaction sent: ${txHash}`);
+
+    // Log the successful swap
+    activityLogger.success(
+      "REBALANCE",
+      `Swapped ${instruction.amount} ${instruction.fromSymbol} → ${instruction.toSymbol}`
+    );
+
+    return txHash;
+  };
+
   const handleExecuteRebalance = async () => {
-    if (!strategy || !address) return;
+    if (!strategy || !address || !smartAccountAddress) return;
+
+    // Filter to only selected trades
+    const tradesToExecute = strategy.trades.filter((_, index) =>
+      selectedTrades.includes(index)
+    );
+
+    if (tradesToExecute.length === 0) {
+      setError("No trades selected for execution");
+      return;
+    }
 
     activityLogger.info(
       "EXECUTE",
-      `Executing ${strategy.trades.length} trades via Monorail...`
+      `🚀 Executing ${tradesToExecute.length} selected trades via Smart Account Delegation...`
     );
     setLoading(true);
     setError("");
-    try {
-      const demoPrivateKey = `0x${address.slice(2).padStart(64, "0")}`;
 
+    try {
+      // Generate deterministic agent private key for delegation
+      const deterministicAgentPrivateKey =
+        getDeterministicAgentPrivateKey(address);
+
+      console.log("🤖 Using Smart Account Delegation for trade execution");
+      console.log("Smart Account:", smartAccountAddress);
+      console.log("Agent Address:", agentAddress);
+      console.log("Trades to execute:", tradesToExecute.length);
+
+      // Execute trades via smart account delegation
       const response = await axios.post("/api/rebalance/execute", {
-        trades: strategy.trades,
-        smartAccountPrivateKey: demoPrivateKey,
+        trades: tradesToExecute,
+        smartAccountAddress: smartAccountAddress,
+        delegatePrivateKey: deterministicAgentPrivateKey,
+        executionMode: "batch", // Execute all trades in a single transaction
       });
 
-      activityLogger.success(
-        "EXECUTE",
-        `Rebalancing executed! TX Hash: ${response.data.userOpHash}`
-      );
-      setSuccess(`Executed! TX: ${response.data.userOpHash.slice(0, 10)}...`);
+      if (response.data.success) {
+        console.log("✅ Smart Account execution successful!");
+        console.log("User Operation Hash:", response.data.userOpHash);
+        console.log("Transaction Hash:", response.data.transactionHash);
 
-      // Refresh portfolio
-      await fetchPortfolio();
+        activityLogger.success(
+          "EXECUTE",
+          `🎉 Rebalancing executed via Smart Account! User Op: ${response.data.userOpHash?.slice(
+            0,
+            10
+          )}...`
+        );
+
+        let successMessage = `🎉 Successfully executed ${tradesToExecute.length} trades via Smart Account!`;
+        if (response.data.transactionHash) {
+          successMessage += ` TX: ${response.data.transactionHash.slice(
+            0,
+            10
+          )}...`;
+        } else if (response.data.userOpHash) {
+          successMessage += ` UserOp: ${response.data.userOpHash.slice(
+            0,
+            10
+          )}...`;
+        }
+
+        setSuccess(successMessage);
+
+        // Log each trade for activity tracking
+        tradesToExecute.forEach((trade, index) => {
+          activityLogger.success(
+            "REBALANCE",
+            `✓ Trade ${index + 1}: ${trade.amount} ${trade.fromSymbol} → ${
+              trade.toSymbol
+            }`
+          );
+        });
+
+        // Update last rebalance time
+        setLastRebalanceTime(new Date());
+        
+        // Refresh portfolio after successful execution
+        await fetchPortfolio();
+      } else {
+        throw new Error("Smart account execution failed");
+      }
     } catch (err: any) {
-      console.error("Execution error:", err);
+      console.error("❌ Smart Account execution error:", err);
+
+      // Provide user-friendly error messages
+      let errorMessage = "Smart Account execution failed";
+
+      if (err.response?.data?.details) {
+        errorMessage = err.response.data.details;
+      } else if (err.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+
+      // Add helpful context for common issues
+      if (errorMessage.includes("insufficient funds")) {
+        errorMessage +=
+          " Please ensure your Smart Account has enough MON tokens for gas fees.";
+      } else if (errorMessage.includes("bundler")) {
+        errorMessage += " Please check your Pimlico bundler configuration.";
+      } else if (errorMessage.includes("delegation")) {
+        errorMessage += " Please ensure delegation is properly set up.";
+      }
+
       activityLogger.error(
         "EXECUTE",
-        "Failed to execute rebalancing",
-        err.response?.data?.details || err.message
+        "❌ Smart Account execution failed",
+        errorMessage
       );
-      setError(
-        err.response?.data?.details ||
-          err.response?.data?.error ||
-          "Execution failed"
-      );
+
+      setError(errorMessage);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Auto-rebalance function that uses existing delegation
+  const handleAutoRebalance = async () => {
+    if (!delegationCreated || !address || !smartAccountAddress) {
+      console.log("Auto-rebalance skipped: Missing delegation or account", {
+        delegationCreated,
+        hasAddress: !!address,
+        hasSmartAccount: !!smartAccountAddress,
+      });
+      return;
+    }
+
+    // If no strategy exists, generate one first
+    if (!strategy) {
+      console.log("🤖 Auto-rebalance: Generating strategy first...");
+      activityLogger.info(
+        "AUTO_REBALANCE",
+        "🤖 Generating rebalancing strategy for auto-execution..."
+      );
+      
+      try {
+        await handleComputeStrategy();
+        // Wait a moment for strategy to be set
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Check if strategy was generated
+        if (!strategy) {
+          throw new Error("Failed to generate rebalancing strategy");
+        }
+      } catch (error) {
+        console.error("Failed to generate strategy for auto-rebalance:", error);
+        activityLogger.error(
+          "AUTO_REBALANCE",
+          "Failed to generate strategy for auto-rebalance",
+          error instanceof Error ? error.message : "Unknown error"
+        );
+        return;
+      }
+    }
+
+    console.log("🤖 Auto-rebalance triggered!");
+    setIsAutoRebalancing(true);
+
+    try {
+      activityLogger.info(
+        "AUTO_REBALANCE",
+        "🤖 Auto-rebalance triggered - executing all suggested trades via delegation"
+      );
+
+      // Auto-select all trades for execution
+      const allTradeIndexes = strategy.trades.map((_, index) => index);
+      setSelectedTrades(allTradeIndexes);
+
+      // Generate deterministic agent private key for delegation
+      const deterministicAgentPrivateKey = getDeterministicAgentPrivateKey(address);
+
+      console.log("🤖 Auto-executing all trades via Smart Account Delegation");
+      console.log("Smart Account:", smartAccountAddress);
+      console.log("Agent Address:", agentAddress);
+      console.log("Total trades:", strategy.trades.length);
+
+      // Execute ALL trades via smart account delegation (auto-mode)
+      const response = await axios.post("/api/rebalance/execute", {
+        trades: strategy.trades, // Execute ALL trades automatically
+        smartAccountAddress: smartAccountAddress,
+        delegatePrivateKey: deterministicAgentPrivateKey,
+        executionMode: "batch",
+      });
+
+      if (response.data.success) {
+        console.log("✅ Auto-rebalance execution successful!");
+
+        activityLogger.success(
+          "AUTO_REBALANCE",
+          `🎉 Auto-rebalance completed! Executed ${strategy.trades.length} trades via Smart Account delegation`
+        );
+
+        let successMessage = `🤖 Auto-rebalance completed! Executed ${strategy.trades.length} trades.`;
+        if (response.data.transactionHash) {
+          successMessage += ` TX: ${response.data.transactionHash.slice(0, 10)}...`;
+        }
+
+        setSuccess(successMessage);
+
+        // Update last rebalance time
+        setLastRebalanceTime(new Date());
+
+        // Refresh portfolio after successful execution
+        await fetchPortfolio();
+
+        // Clear the strategy since it's been executed
+        setStrategy(null);
+        setSelectedTrades([]);
+
+      } else {
+        throw new Error("Auto-rebalance execution failed");
+      }
+
+    } catch (err: any) {
+      console.error("❌ Auto-rebalance error:", err);
+
+      let errorMessage = "Auto-rebalance failed";
+      if (err.response?.data?.details) {
+        errorMessage = err.response.data.details;
+      } else if (err.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+
+      activityLogger.error(
+        "AUTO_REBALANCE",
+        "❌ Auto-rebalance failed",
+        errorMessage
+      );
+
+      setError(`Auto-rebalance failed: ${errorMessage}`);
+
+    } finally {
+      setIsAutoRebalancing(false);
     }
   };
 
@@ -918,6 +1336,8 @@ By signing this message, I grant permission for the AI agent to execute trades w
       return;
     }
 
+    let swapRecord: any = null;
+
     activityLogger.info(
       "SWAP",
       `Preparing swap: ${swapState.fromAmount} tokens...`
@@ -993,22 +1413,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
         decimals: fromTokenDecimals, // Pass decimals for proper WEI conversion
       });
 
-      // DEBUG: Log the raw API response
-      console.log("Raw API response:", {
-        success: response.data.success,
-        hasTransaction: !!response.data.transaction,
-        transactionValue: response.data.transaction?.value,
-        transactionValueType: typeof response.data.transaction?.value,
-      });
-
       const { transaction } = response.data;
-
-      // DEBUG: Log after destructuring
-      console.log("After destructuring:", {
-        hasTransaction: !!transaction,
-        transactionValue: transaction?.value,
-        transactionValueType: typeof transaction?.value,
-      });
 
       if (!transaction) {
         throw new Error("No transaction data received from API");
@@ -1106,7 +1511,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
 
       activityLogger.info(
         "SWAP",
-        `Gas: ${finalGasLimit} units (EIP-1559 pricing by wallet)`
+        `Gas: ${formatGasEstimate(finalGasLimit)} (EIP-1559 pricing by wallet)`
       );
 
       // Check user balance before transaction
@@ -1135,12 +1540,26 @@ By signing this message, I grant permission for the AI agent to execute trades w
         console.warn("Could not check balance:", balanceError);
       }
 
+      // Record swap initiation
+      swapRecord = swapHistory.addSwap({
+        fromToken: swapState.fromToken,
+        toToken: swapState.toToken,
+        fromSymbol: fromTokenSymbol,
+        toSymbol: toTokenSymbol,
+        fromAmount: swapState.fromAmount,
+        toAmount: response.data.toAmount || "0",
+        status: "pending",
+        type: "manual",
+        notes: `Gas estimate: ${formatGasEstimate(finalGasLimit)}`,
+      });
+
       // CRITICAL: Test transaction with eth_estimateGas before sending
       try {
         activityLogger.info(
           "SWAP",
           "Testing transaction with gas estimation..."
         );
+
         const estimatedGasHex = await window.ethereum.request({
           method: "eth_estimateGas",
           params: [txParams],
@@ -1166,7 +1585,11 @@ By signing this message, I grant permission for the AI agent to execute trades w
           "Gas estimation failed - transaction would revert:",
           gasError
         );
-        throw new Error(`Transaction would fail: ${gasError.message}`);
+        throw new Error(
+          `Transaction would fail: ${
+            (gasError as Error).message || "Gas estimation failed"
+          }`
+        );
       }
 
       const txHash = await window.ethereum.request({
@@ -1210,25 +1633,9 @@ By signing this message, I grant permission for the AI agent to execute trades w
         }
       }, 5000); // Check after 5 seconds
 
-      // Index transaction with enhanced indexer (Envio pattern)
+      // Transaction completed successfully
       if (txHash) {
-        await assetNestIndexer.indexTransaction({
-          hash: txHash,
-          from: address || "",
-          to: swapState.toToken,
-          type: "swap",
-          status: "success",
-          metadata: {
-            tokens: {
-              fromToken: swapState.fromToken,
-              toToken: swapState.toToken,
-              fromSymbol: fromTokenSymbol,
-              toSymbol: toTokenSymbol,
-              fromAmount: swapState.fromAmount,
-              toAmount: response.data.toAmount,
-            },
-          },
-        });
+        console.log("Swap transaction indexed:", txHash);
       }
 
       addNotification(
@@ -1239,8 +1646,21 @@ By signing this message, I grant permission for the AI agent to execute trades w
         } ${toTokenSymbol}${txHash ? ` | TX: ${txHash.slice(0, 10)}...` : ""}`
       );
 
-      // Refresh portfolio
-      await fetchPortfolio();
+      // Background refresh portfolio balances without affecting user flow
+      refreshBalancesInBackground({
+        fromToken: swapState.fromToken,
+        toToken: swapState.toToken,
+        amount: swapState.fromAmount,
+      });
+
+      // Update swap record with success and transaction hash
+      swapHistory.updateSwap(swapRecord.id, {
+        status: "success",
+        txHash: txHash || undefined,
+        notes: `Completed successfully. Gas used: ${formatGasEstimate(
+          finalGasLimit
+        )}`,
+      });
 
       // Reset swap form
       setSwapState({
@@ -1260,6 +1680,15 @@ By signing this message, I grant permission for the AI agent to execute trades w
       });
     } catch (err: any) {
       console.error("Swap execution error:", err);
+
+      // Update swap record with failure
+      if (swapRecord) {
+        swapHistory.updateSwap(swapRecord.id, {
+          status: "failed",
+          notes: `Failed: ${err.response?.data?.details || err.message}`,
+        });
+      }
+
       activityLogger.error(
         "SWAP",
         "Failed to execute swap",
@@ -1664,7 +2093,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400">
+                    <div className="p-6 bg-black rounded-lg border-2 border-cyan-400 shadow-[0_0_20px_rgba(0,255,247,0.2)]">
                       <div className="text-sm text-gray-400 uppercase mb-2">
                         Smart Account Address
                       </div>
@@ -1680,7 +2109,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
                     </div>
 
                     {agentAddress && (
-                      <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-purple-400">
+                      <div className="p-6 bg-black rounded-lg border-2 border-purple-400 shadow-[0_0_20px_rgba(147,51,234,0.2)]">
                         <div className="text-sm text-gray-400 uppercase mb-2">
                           AI Agent Address
                         </div>
@@ -1999,9 +2428,18 @@ By signing this message, I grant permission for the AI agent to execute trades w
                       disabled={loading}
                       className="btn btn-success w-full text-lg"
                     >
-                      {loading
-                        ? "ANALYZING..."
-                        : "🤖 GET AI ANALYSIS & SUGGESTIONS →"}
+                      {loading ? (
+                        "ANALYZING..."
+                      ) : (
+                        <span className="flex items-center gap-2">
+                          <img
+                            src="/agent.png"
+                            alt="AI Agent"
+                            className="w-5 h-5"
+                          />
+                          GET AI ANALYSIS & SUGGESTIONS →
+                        </span>
+                      )}
                     </button>
                   </div>
                 )}
@@ -2226,7 +2664,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
 
                               {/* Expanded Details - Enhanced */}
                               {isExpanded && (
-                                <div className="mt-6 pt-6 border-t-2 border-cyan-400/30 bg-black rounded-lg p-6 border-2 border-cyan-400/50 shadow-[0_0_30px_rgba(0,255,247,0.3)]">
+                                <div className="mt-6 pt-6 border-t-2 border-cyan-400/30 bg-black rounded-lg p-6 shadow-[0_0_30px_rgba(0,255,247,0.3)]">
                                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                                     {/* Contract Address */}
                                     <div className="space-y-2">
@@ -2413,82 +2851,311 @@ By signing this message, I grant permission for the AI agent to execute trades w
           )}
 
           {/* Rebalancing Strategy */}
-          {step === "rebalance" && strategy && (
+          {step === "rebalance" && (
             <div className="card fade-in">
               <h2 className="text-3xl font-bold mb-6 neon-text">
                 AI REBALANCING STRATEGY
               </h2>
 
-              <div className="space-y-6">
-                <div className="p-6 bg-black rounded-lg border-2 border-purple-400 shadow-[0_0_30px_rgba(191,0,255,0.3)]">
-                  <h3 className="font-bold mb-3 text-purple-400 text-xl">
-                    AI RATIONALE:
-                  </h3>
-                  <p className="text-gray-200 leading-relaxed">
-                    {strategy.rationale}
-                  </p>
-                </div>
+              {!strategy ? (
+                <div className="space-y-6">
+                  <div className="text-center py-12">
+                    <div className="mb-6">
+                      <div className="mb-4">
+                        <img
+                          src="/agent.png"
+                          alt="AI Agent"
+                          className="w-16 h-16 mx-auto"
+                        />
+                      </div>
+                      <h3 className="text-2xl font-bold text-cyan-400 mb-2">
+                        Ready to Optimize Your Portfolio
+                      </h3>
+                      <p className="text-gray-400">
+                        Let AI analyze your holdings and suggest optimal
+                        rebalancing trades
+                      </p>
+                    </div>
 
-                <div>
-                  <h3 className="font-bold mb-4 text-cyan-400 text-xl">
-                    REQUIRED TRADES ({strategy.trades.length})
-                  </h3>
-                  {strategy.trades.length > 0 ? (
-                    <div className="space-y-3">
-                      {strategy.trades.map((trade, index) => (
-                        <div
-                          key={index}
-                          className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400/30 hover:border-cyan-400 transition-all"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-4">
-                              <span className="text-2xl font-bold text-red-400">
-                                {trade.fromSymbol}
-                              </span>
-                              <span className="text-cyan-400">→</span>
-                              <span className="text-2xl font-bold text-green-400">
-                                {trade.toSymbol}
-                              </span>
+                    <div className="flex gap-4 justify-center">
+                      <button
+                        onClick={handleComputeStrategy}
+                        disabled={loading || holdings.length === 0}
+                        className="btn btn-primary text-lg px-8 py-3"
+                      >
+                        {loading ? "ANALYZING..." : "🚀 TRIGGER REBALANCE"}
+                      </button>
+                    </div>
+
+                    {holdings.length === 0 && (
+                      <p className="text-yellow-400 text-sm mt-4">
+                        Load your portfolio first to enable rebalancing
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Next Auto-Rebalance Timer */}
+                  <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-purple-400/30">
+                    <h4 className="text-purple-400 font-bold mb-2">
+                      📅 Auto-Rebalance Schedule
+                    </h4>
+                    <div className="text-sm text-gray-400">
+                      {delegationParams.rebalanceInterval ? (
+                        <>
+                          <p>
+                            Frequency: Every{" "}
+                            {delegationParams.rebalanceInterval} hour
+                            {delegationParams.rebalanceInterval === 1
+                              ? ""
+                              : "s"}
+                          </p>
+                          <RebalanceTimer
+                            intervalHours={delegationParams.rebalanceInterval}
+                            lastRebalanceTime={lastRebalanceTime}
+                            autoRebalanceEnabled={autoRebalanceEnabled}
+                            onAutoRebalance={handleAutoRebalance}
+                            isAutoRebalancing={isAutoRebalancing}
+                          />
+                          
+                          {/* Auto-Rebalance Toggle */}
+                          <div className="mt-4 p-3 bg-gray-900/50 rounded border border-cyan-400/30">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <h4 className="font-bold text-cyan-400">Auto-Rebalance</h4>
+                                <p className="text-xs text-gray-400">
+                                  Automatically execute rebalancing when timer expires
+                                </p>
+                              </div>
+                              <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={autoRebalanceEnabled}
+                                  onChange={(e) => setAutoRebalanceEnabled(e.target.checked)}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-600"></div>
+                              </label>
                             </div>
+                            {autoRebalanceEnabled && (
+                              <p className="text-xs text-green-400 mt-2">
+                                🤖 Trades will be executed automatically using your delegation
+                              </p>
+                            )}
                           </div>
-                          <div className="mt-2 text-sm text-gray-400">
-                            {trade.reason}
-                          </div>
-                        </div>
-                      ))}
+                        </>
+                      ) : (
+                        <p>
+                          Auto-rebalancing not configured. Set up delegation to
+                          enable automatic portfolio rebalancing.
+                        </p>
+                      )}
                     </div>
-                  ) : (
-                    <div className="text-center py-8 text-green-400 text-xl font-bold">
-                      PORTFOLIO ALREADY BALANCED!
-                    </div>
-                  )}
-                </div>
-
-                <div className="p-4 bg-gray-800/50 rounded-lg border-2 border-cyan-400/30">
-                  <div className="text-sm text-gray-400">
-                    ESTIMATED GAS:{" "}
-                    <span className="mono text-cyan-400">
-                      {strategy.estimatedGas}
-                    </span>
                   </div>
                 </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="p-6 bg-black rounded-lg border-2 border-purple-400 shadow-[0_0_30px_rgba(191,0,255,0.3)]">
+                    <h3 className="font-bold mb-3 text-purple-400 text-xl">
+                      AI RATIONALE:
+                    </h3>
+                    <p className="text-gray-200 leading-relaxed">
+                      {strategy.rationale}
+                    </p>
+                  </div>
 
-                <div className="flex gap-4">
-                  <button
-                    onClick={() => setStep("portfolio")}
-                    className="btn btn-secondary flex-1 text-lg"
-                  >
-                    ← BACK
-                  </button>
-                  <button
-                    onClick={handleExecuteRebalance}
-                    disabled={strategy.trades.length === 0 || loading}
-                    className="btn btn-primary flex-1 text-lg"
-                  >
-                    {loading ? "EXECUTING..." : "EXECUTE REBALANCING →"}
-                  </button>
+                  <div>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="font-bold text-cyan-400 text-xl">
+                        SUGGESTED TRADES ({strategy.trades.length})
+                      </h3>
+                      <button
+                        onClick={() => {
+                          if (
+                            selectedTrades.length === strategy.trades.length
+                          ) {
+                            setSelectedTrades([]);
+                          } else {
+                            setSelectedTrades(
+                              Array.from(
+                                { length: strategy.trades.length },
+                                (_, i) => i
+                              )
+                            );
+                          }
+                        }}
+                        className="text-sm px-3 py-1 rounded bg-cyan-400/20 text-cyan-400 hover:bg-cyan-400/30 transition-colors"
+                      >
+                        {selectedTrades.length === strategy.trades.length
+                          ? "Deselect All"
+                          : "Select All"}
+                      </button>
+                    </div>
+                    {strategy.trades.length > 0 ? (
+                      <div className="space-y-3">
+                        {strategy.trades.map((trade, index) => {
+                          const isSelected = selectedTrades.includes(index);
+                          return (
+                            <div
+                              key={index}
+                              className={`p-6 rounded-lg border-2 transition-all duration-300 ${
+                                isSelected
+                                  ? "bg-black border-cyan-400 shadow-[0_0_20px_rgba(0,255,247,0.3)]"
+                                  : "bg-gray-800/50 border-gray-600/50 hover:border-gray-500"
+                              }`}
+                            >
+                              <div className="flex items-start justify-between mb-4">
+                                <div className="flex items-center gap-4">
+                                  <label className="flex items-center cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={(e) => {
+                                        if (e.target.checked) {
+                                          setSelectedTrades((prev) => [
+                                            ...prev,
+                                            index,
+                                          ]);
+                                        } else {
+                                          setSelectedTrades((prev) =>
+                                            prev.filter((i) => i !== index)
+                                          );
+                                        }
+                                      }}
+                                      className="w-5 h-5 text-cyan-400 bg-gray-700 border-gray-600 rounded focus:ring-cyan-400 focus:ring-2"
+                                    />
+                                  </label>
+                                  <div className="flex items-center gap-3">
+                                    <span
+                                      className={`text-xl font-bold ${
+                                        isSelected
+                                          ? "text-red-400"
+                                          : "text-gray-500"
+                                      }`}
+                                    >
+                                      {trade.fromSymbol}
+                                    </span>
+                                    <div
+                                      className={`px-2 py-1 rounded text-xs font-bold ${
+                                        isSelected
+                                          ? "bg-cyan-400/20 text-cyan-400"
+                                          : "bg-gray-600/20 text-gray-500"
+                                      }`}
+                                    >
+                                      SELL
+                                    </div>
+                                  </div>
+                                </div>
+                                <div
+                                  className={`text-3xl ${
+                                    isSelected
+                                      ? "text-cyan-400"
+                                      : "text-gray-500"
+                                  }`}
+                                >
+                                  →
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className={`px-2 py-1 rounded text-xs font-bold ${
+                                      isSelected
+                                        ? "bg-green-400/20 text-green-400"
+                                        : "bg-gray-600/20 text-gray-500"
+                                    }`}
+                                  >
+                                    BUY
+                                  </div>
+                                  <span
+                                    className={`text-xl font-bold ${
+                                      isSelected
+                                        ? "text-green-400"
+                                        : "text-gray-500"
+                                    }`}
+                                  >
+                                    {trade.toSymbol}
+                                  </span>
+                                </div>
+                              </div>
+                              <div
+                                className={`p-4 rounded-lg ${
+                                  isSelected
+                                    ? "bg-gray-800/50"
+                                    : "bg-gray-700/50"
+                                } mb-3`}
+                              >
+                                <div
+                                  className={`text-sm font-semibold ${
+                                    isSelected
+                                      ? "text-cyan-400"
+                                      : "text-gray-500"
+                                  } mb-1`}
+                                >
+                                  Amount: {trade.amount} {trade.fromSymbol}
+                                </div>
+                              </div>
+                              <div
+                                className={`text-sm ${
+                                  isSelected ? "text-gray-300" : "text-gray-600"
+                                } leading-relaxed`}
+                              >
+                                <strong
+                                  className={
+                                    isSelected
+                                      ? "text-cyan-400"
+                                      : "text-gray-500"
+                                  }
+                                >
+                                  Reason:
+                                </strong>{" "}
+                                {trade.reason}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-green-400 text-xl font-bold">
+                        PORTFOLIO ALREADY BALANCED!
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-4 pt-4">
+                    <button
+                      onClick={() => setStep("portfolio")}
+                      className="btn btn-secondary flex-1 text-lg"
+                    >
+                      ← BACK
+                    </button>
+                    <button
+                      onClick={handleExecuteRebalance}
+                      disabled={
+                        selectedTrades.length === 0 ||
+                        loading ||
+                        !smartAccountAddress ||
+                        !delegationCreated
+                      }
+                      className="btn btn-primary flex-1 text-lg"
+                      title={
+                        !smartAccountAddress
+                          ? "Smart Account required for execution"
+                          : !delegationCreated
+                          ? "Delegation required for execution"
+                          : ""
+                      }
+                    >
+                      {loading
+                        ? "EXECUTING VIA DELEGATION..."
+                        : !smartAccountAddress
+                        ? "SMART ACCOUNT REQUIRED"
+                        : !delegationCreated
+                        ? "DELEGATION REQUIRED"
+                        : `EXECUTE ${selectedTrades.length} TRADE${
+                            selectedTrades.length === 1 ? "" : "S"
+                          } VIA DELEGATION →`}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -2912,10 +3579,10 @@ By signing this message, I grant permission for the AI agent to execute trades w
                             <span className="text-gray-400">Network Fee:</span>
                             <span className="text-white font-bold">
                               {swapState.quote.estimatedGas
-                                ? `~${parseFloat(
+                                ? formatGasEstimate(
                                     swapState.quote.estimatedGas
-                                  ).toLocaleString()} gas units`
-                                : "~200,000 gas units"}
+                                  )
+                                : formatGasEstimate(200000)}
                             </span>
                           </div>
                         </div>
@@ -2956,79 +3623,142 @@ By signing this message, I grant permission for the AI agent to execute trades w
                 ACTIVITY LOGS & ANALYTICS
               </h2>
 
-              {/* Enhanced Analytics Dashboard */}
-              {address &&
-                (() => {
-                  const analytics = assetNestIndexer.getAnalytics(address);
-                  return (
-                    <div className="mb-6 p-4 bg-black rounded-lg border-2 border-purple-400/50">
-                      <h3 className="text-xl font-bold text-purple-400 mb-4">
-                        📊 PORTFOLIO ANALYTICS
-                      </h3>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        {(() => {
-                          return (
-                            <>
-                              <div className="text-center p-3 bg-gray-800/50 rounded">
-                                <div className="text-2xl font-bold text-cyan-400">
-                                  {analytics.totalTransactions}
-                                </div>
-                                <div className="text-xs text-gray-400">
-                                  Total Transactions
-                                </div>
-                              </div>
-                              <div className="text-center p-3 bg-gray-800/50 rounded">
-                                <div className="text-2xl font-bold text-green-400">
-                                  {analytics.totalSwaps}
-                                </div>
-                                <div className="text-xs text-gray-400">
-                                  Swaps Executed
-                                </div>
-                              </div>
-                              <div className="text-center p-3 bg-gray-800/50 rounded">
-                                <div className="text-2xl font-bold text-blue-400">
-                                  {analytics.totalRebalances}
-                                </div>
-                                <div className="text-xs text-gray-400">
-                                  AI Rebalances
-                                </div>
-                              </div>
-                              <div className="text-center p-3 bg-gray-800/50 rounded">
-                                <div className="text-2xl font-bold text-yellow-400">
-                                  ${analytics.latestPortfolioValue.toFixed(2)}
-                                </div>
-                                <div className="text-xs text-gray-400">
-                                  Current Value
-                                </div>
-                              </div>
-                            </>
-                          );
-                        })()}
-                      </div>
+              {/* Swap History Section */}
+              <div className="mb-8 p-4 bg-black rounded-lg border-2 border-cyan-400/50">
+                <h3 className="text-xl font-bold text-cyan-400 mb-4">
+                  💱 SWAP HISTORY
+                </h3>
+                {(() => {
+                  const swaps = swapHistory.getHistory().slice(0, 10); // Latest 10 swaps
+                  const stats = swapHistory.getStats();
 
-                      <div className="mt-4 pt-4 border-t-2 border-purple-400/30">
-                        <div className="text-sm text-gray-400 flex justify-between">
-                          <span>
-                            First Activity:{" "}
-                            {analytics.firstActivity
-                              ? new Date(
-                                  analytics.firstActivity
-                                ).toLocaleDateString()
-                              : "None"}
-                          </span>
-                          <span>
-                            Last Activity:{" "}
-                            {analytics.lastActivity
-                              ? new Date(
-                                  analytics.lastActivity
-                                ).toLocaleDateString()
-                              : "None"}
-                          </span>
+                  return (
+                    <>
+                      {/* Swap Stats */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div className="text-center p-3 bg-gray-800/50 rounded">
+                          <div className="text-2xl font-bold text-green-400">
+                            {stats.successful}
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            Successful Swaps
+                          </div>
+                        </div>
+                        <div className="text-center p-3 bg-gray-800/50 rounded">
+                          <div className="text-2xl font-bold text-red-400">
+                            {stats.failed}
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            Failed Swaps
+                          </div>
+                        </div>
+                        <div className="text-center p-3 bg-gray-800/50 rounded">
+                          <div className="text-2xl font-bold text-cyan-400">
+                            {stats.successRate.toFixed(1)}%
+                          </div>
+                          <div className="text-xs text-gray-400">
+                            Success Rate
+                          </div>
+                        </div>
+                        <div className="text-center p-3 bg-gray-800/50 rounded">
+                          <div className="text-2xl font-bold text-purple-400">
+                            {stats.last24h}
+                          </div>
+                          <div className="text-xs text-gray-400">Last 24h</div>
                         </div>
                       </div>
-                    </div>
+
+                      {/* Recent Swaps */}
+                      <div className="space-y-2 max-h-96 overflow-y-auto">
+                        {swaps.length > 0 ? (
+                          swaps.map((swap) => (
+                            <div
+                              key={swap.id}
+                              className="p-3 bg-gray-800/50 rounded border border-gray-700 hover:border-cyan-400/50 transition-all"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className={`w-2 h-2 rounded-full ${
+                                      swap.status === "success"
+                                        ? "bg-green-400"
+                                        : swap.status === "failed"
+                                        ? "bg-red-400"
+                                        : "bg-yellow-400"
+                                    }`}
+                                  />
+                                  <span className="text-sm font-mono">
+                                    {swap.fromAmount} {swap.fromSymbol} →{" "}
+                                    {swap.toAmount} {swap.toSymbol}
+                                  </span>
+                                  <span
+                                    className={`text-xs px-2 py-1 rounded ${
+                                      swap.type === "manual"
+                                        ? "bg-blue-500/20 text-blue-400"
+                                        : "bg-purple-500/20 text-purple-400"
+                                    }`}
+                                  >
+                                    {swap.type}
+                                  </span>
+                                </div>
+                                <div className="text-right">
+                                  <div className="text-xs text-gray-400">
+                                    {new Date(swap.timestamp).toLocaleString()}
+                                  </div>
+                                  {swap.txHash && (
+                                    <div className="text-xs text-cyan-400 font-mono">
+                                      {swap.txHash.slice(0, 10)}...
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-center py-8 text-gray-400">
+                            No swaps yet. Start trading to see your history!
+                          </div>
+                        )}
+                      </div>
+                    </>
                   );
                 })()}
+              </div>
+
+              {/* Enhanced Analytics Dashboard */}
+              {address && (
+                <div className="mb-6 p-4 bg-black rounded-lg border-2 border-purple-400/50">
+                  <h3 className="text-xl font-bold text-purple-400 mb-4">
+                    📊 PORTFOLIO ANALYTICS
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    <div className="text-center p-3 bg-gray-800/50 rounded">
+                      <div className="text-2xl font-bold text-cyan-400">
+                        {activityLogger.getLogs().length}
+                      </div>
+                      <div className="text-xs text-gray-400">
+                        Total Activities
+                      </div>
+                    </div>
+                    <div className="text-center p-3 bg-gray-800/50 rounded">
+                      <div className="text-2xl font-bold text-green-400">
+                        {swapHistory.getHistory().length}
+                      </div>
+                      <div className="text-xs text-gray-400">
+                        Swaps Executed
+                      </div>
+                    </div>
+                    <div className="text-center p-3 bg-gray-800/50 rounded">
+                      <div className="text-2xl font-bold text-blue-400">
+                        {holdings.length}
+                      </div>
+                      <div className="text-xs text-gray-400">
+                        Token Holdings
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3 max-h-[600px] overflow-y-auto">
                 {activityLogger.getLogs().length > 0 ? (
@@ -3134,7 +3864,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
                   ANALYZING PORTFOLIO...
                 </div>
                 <div className="text-gray-400">
-                  Crestal AI is evaluating your holdings and computing optimal
+                  AI Agent is analyzing your portfolio and computing optimal
                   rebalancing strategy
                 </div>
                 <div className="grid grid-cols-3 gap-4 mt-6">
@@ -3193,7 +3923,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
                     <div className="flex items-center gap-2 mb-2">
                       <img src="/agent.png" alt="AI" className="w-5 h-5" />
                       <div className="text-blue-400 font-bold">
-                        CRESTAL AI ANALYSIS
+                        AI AGENT ANALYSIS
                       </div>
                     </div>
                     <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">

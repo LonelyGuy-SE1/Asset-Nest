@@ -40,18 +40,6 @@ export async function POST(request: NextRequest) {
 
     console.log('Swap quote received:', quote);
 
-    // DEBUG: Check the exact value from Monorail
-    console.log('DEBUG - Transaction value analysis:', {
-      hasValue: quote.transaction.hasOwnProperty('value'),
-      value: quote.transaction.value,
-      valueType: typeof quote.transaction.value,
-      isFalsy: !quote.transaction.value,
-      isEmptyString: quote.transaction.value === '',
-      isNull: quote.transaction.value === null,
-      isUndefined: quote.transaction.value === undefined,
-      fallbackTriggers: !quote.transaction.value ? 'YES - THIS IS THE BUG' : 'NO'
-    });
-
     // Use transaction data directly from Monorail quote
     console.log('Transaction from Monorail:', {
       to: quote.transaction.to,

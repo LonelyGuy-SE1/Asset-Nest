@@ -1,109 +1,118 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { monorailClient, type MonorailQuoteParams } from '@/lib/monorail/swap';
-import { bundlerClient } from '@/lib/config/viem-clients';
-import { createMetaMaskSmartAccount } from '@/lib/smart-account/create-account';
+import { executeDelegatedTrades } from '@/lib/smart-account/delegation';
 import { type RebalanceTrade } from '@/lib/ai/rebalancer';
 import { type Address, type Hex } from 'viem';
-import { toWei } from '@/lib/utils/monorail-utils';
 
 /**
- * API Route: Execute Rebalancing Trades
+ * API Route: Execute Rebalancing Trades via Smart Account Delegation
  * POST /api/rebalance/execute
  *
- * Executes the rebalancing trades using Monorail swap API and MetaMask Smart Account
+ * Executes rebalancing trades using MetaMask Smart Account with proper delegation
+ * and Pimlico bundler for gasless transactions
+ * 
  * Reference: https://testnet-preview.monorail.xyz/developers/documentation
  * Reference: https://docs.metamask.io/delegation-toolkit/guides/smart-accounts/send-gasless-transaction/
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { trades, smartAccountPrivateKey } = body;
+    const { 
+      trades, 
+      smartAccountAddress, 
+      delegatePrivateKey,
+      executionMode = 'batch' // 'batch' or 'individual'
+    } = body;
 
-    if (!trades || !smartAccountPrivateKey) {
+    // Validation
+    if (!trades || !Array.isArray(trades) || trades.length === 0) {
       return NextResponse.json(
-        { error: 'Missing trades or smartAccountPrivateKey' },
+        { error: 'Missing or empty trades array' },
         { status: 400 }
       );
     }
 
-    console.log('Executing rebalancing trades via API...');
+    if (!smartAccountAddress) {
+      return NextResponse.json(
+        { error: 'Missing smartAccountAddress' },
+        { status: 400 }
+      );
+    }
+
+    if (!delegatePrivateKey) {
+      return NextResponse.json(
+        { error: 'Missing delegatePrivateKey for agent execution' },
+        { status: 400 }
+      );
+    }
+
+    console.log('🚀 Executing rebalancing trades via smart account delegation...');
+    console.log('Smart Account Address:', smartAccountAddress);
     console.log('Number of trades:', trades.length);
+    console.log('Execution mode:', executionMode);
 
-    // Create smart account
-    const { smartAccount } = await createMetaMaskSmartAccount(smartAccountPrivateKey as Hex);
-
-    console.log('Smart account:', smartAccount.address);
-
-    // Get quotes for all trades (slippage handled during execution)
-    const quotePromises = trades.map((trade: RebalanceTrade) => {
-      // Monorail expects amounts in WEI format (based on test-monorail-api.js)
-      // The AI rebalancer provides amounts in human-readable format, so we need to convert to WEI
-      // TODO: Get decimals from token metadata instead of assuming 18
-      const decimals = 18; // Most tokens use 18 decimals
-      const amountInWei = toWei(trade.amount, decimals);
-
-      console.log(`Converting ${trade.amount} ${trade.fromSymbol} to WEI: ${amountInWei}`);
-      console.log(`Getting quote from ${trade.fromToken} to ${trade.toToken}`);
-
-      const quoteParams: MonorailQuoteParams = {
-        from: trade.fromToken as Address,
-        to: trade.toToken as Address,
-        amount: amountInWei, // Convert to WEI format - Monorail expects this
-        sender: smartAccount.address, // Add sender for complete transaction data
-        // slippage not used in Monorail quote API
-      };
-      return monorailClient.getQuote(quoteParams);
+    // Log trade details
+    trades.forEach((trade: RebalanceTrade, index: number) => {
+      console.log(`Trade ${index + 1}: ${trade.amount} ${trade.fromSymbol} → ${trade.toSymbol}`);
+      console.log(`  Reason: ${trade.reason}`);
     });
 
-    const quotes = await Promise.all(quotePromises);
-    console.log('All quotes fetched:', quotes.length);
+    // Execute trades via smart account delegation
+    console.log('⚡ Starting delegation-based execution...');
+    
+    const result = await executeDelegatedTrades(
+      trades,
+      smartAccountAddress as Address,
+      delegatePrivateKey as Hex
+    );
 
-    // Prepare swap transactions
-    const swapCalls = quotes.map((quote) => {
-      const swapTx = monorailClient.prepareSwapTransaction(quote);
-      return {
-        to: swapTx.to,
-        data: swapTx.data,
-        value: swapTx.value,
-      };
-    });
+    if (result.success) {
+      console.log('✅ Rebalancing trades executed successfully!');
+      console.log('User Operation Hash:', result.userOpHash);
+      console.log('Transaction Hash:', result.transactionHash);
 
-    console.log('Prepared swap calls:', swapCalls.length);
+      return NextResponse.json({
+        success: true,
+        message: 'Rebalancing trades executed successfully via smart account',
+        userOpHash: result.userOpHash,
+        transactionHash: result.transactionHash,
+        tradesCount: trades.length,
+        smartAccountAddress,
+        executionTimestamp: new Date().toISOString(),
+      });
+    } else {
+      throw new Error('Delegation execution failed without specific error');
+    }
 
-    // Send user operation with all swap calls batched
-    console.log('Sending user operation...');
-
-    const userOpHash = await bundlerClient.sendUserOperation({
-      account: smartAccount,
-      calls: swapCalls,
-    });
-
-    console.log('User operation sent:', userOpHash);
-
-    // Wait for user operation receipt
-    console.log('Waiting for user operation receipt...');
-    const receipt = await bundlerClient.waitForUserOperationReceipt({
-      hash: userOpHash,
-    });
-
-    console.log('User operation confirmed:', receipt);
-
-    return NextResponse.json({
-      success: true,
-      userOpHash,
-      receipt,
-      tradesExecuted: trades.length,
-      message: 'Rebalancing trades executed successfully',
-    });
   } catch (error: any) {
-    console.error('Error executing rebalancing trades:', error);
+    console.error('❌ Error executing rebalancing trades:', error);
+    
+    // Provide user-friendly error messages based on error type
+    let userMessage = 'Failed to execute rebalancing trades';
+    let statusCode = 500;
+
+    if (error.message?.includes('insufficient funds')) {
+      userMessage = 'Smart account has insufficient funds. Please ensure it has enough MON tokens for gas fees.';
+      statusCode = 400;
+    } else if (error.message?.includes('bundler')) {
+      userMessage = 'Bundler service error. Please check your Pimlico API configuration.';
+      statusCode = 503;
+    } else if (error.message?.includes('execution reverted')) {
+      userMessage = 'Trade execution failed. This may be due to insufficient token balance or slippage.';
+      statusCode = 400;
+    } else if (error.message?.includes('delegation')) {
+      userMessage = 'Delegation error. Please ensure the smart account is properly set up for delegation.';
+      statusCode = 400;
+    }
+
     return NextResponse.json(
       {
-        error: 'Failed to execute rebalancing trades',
+        success: false,
+        error: userMessage,
         details: error.message,
-        stack: error.stack,
+        code: error.code || 'EXECUTION_FAILED',
+        timestamp: new Date().toISOString(),
       },
-      { status: 500 }
+      { status: statusCode }
     );
   }
 }

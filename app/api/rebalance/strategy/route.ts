@@ -11,7 +11,7 @@ import { createRebalancer, type PortfolioHolding, type PortfolioTarget } from '@
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { holdings, targets, autoAllocate } = body;
+    const { holdings, targets, autoAllocate, riskAppetite } = body;
 
     if (!holdings) {
       return NextResponse.json(
@@ -67,7 +67,8 @@ export async function POST(request: NextRequest) {
     // Compute rebalancing strategy (AI will auto-allocate if no targets)
     const strategy = await rebalancer.computeRebalancingTrades(
       validatedHoldings,
-      validatedTargets // Empty array if autoAllocate = true
+      validatedTargets, // Empty array if autoAllocate = true
+      riskAppetite || 'medium' // Default to medium risk
     );
 
     console.log('Rebalancing strategy computed:', strategy);
