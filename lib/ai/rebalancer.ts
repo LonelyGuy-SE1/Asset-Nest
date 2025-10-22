@@ -87,7 +87,7 @@ Respond in this exact JSON format:
       "toToken": "address",
       "fromSymbol": "SYMBOL",
       "toSymbol": "SYMBOL",
-      "amount": "amount in wei",
+      "amount": "amount in human-readable format (e.g., 1.5)",
       "reason": "explanation"
     }
   ],
@@ -215,19 +215,26 @@ OPTIMIZATION GOALS:
 4. Minimize number of trades (reduce gas costs)
 5. Balance risk across verified assets
 
-REQUIRED OUTPUT FORMAT (JSON only, no markdown):
+CRITICAL: YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN, NO CODE BLOCKS, NO EXPLANATION TEXT.
+START YOUR RESPONSE WITH { AND END WITH }
+
+REQUIRED JSON FORMAT:
 {
-  "analysis": {
-    "riskLevel": "LOW|MEDIUM|HIGH",
-    "portfolioHealth": "score 0-100",
-    "concerns": ["list any red flags or concerns"],
-    "strengths": ["positive aspects of current portfolio"]
-  },
-  ${isAutoAllocate ? `"recommendedAllocation": [{"symbol": "TOKEN", "targetPercentage": 40, "reason": "why this allocation"}],` : ''}
-  "trades": [{"fromToken": "0x...", "toToken": "0x...", "fromSymbol": "SYMBOL", "toSymbol": "SYMBOL", "amount": "123.456", "reason": "detailed reasoning with data points"}],
-  "rationale": "comprehensive analysis of portfolio health, trade rationale, risk assessment",
+  "trades": [
+    {
+      "fromToken": "0xcontract_address",
+      "toToken": "0xcontract_address",
+      "fromSymbol": "TOKEN1",
+      "toSymbol": "TOKEN2",
+      "amount": "0.5",
+      "reason": "why this trade"
+    }
+  ],
+  "rationale": "Your detailed analysis explaining the portfolio health, risks, and why these trades were recommended",
   "estimatedGas": "0.01 ETH"
-}`;
+}
+
+PROVIDE AT LEAST 2-3 TRADES IF THE PORTFOLIO NEEDS REBALANCING.`;
 
     const analysisRequest = {
       prompt: prompt,
@@ -237,87 +244,118 @@ REQUIRED OUTPUT FORMAT (JSON only, no markdown):
 
     try {
       // Call Crestal AI Agent API for portfolio analysis
-      // Reference: https://open.service.crestal.network/v1/redoc
-      const response = await axios.post(
-        `${this.apiUrl}/chat/completions`,
+      // Reference: Based on popup.js - Crestal uses a chat-based API
+
+      // Step 1: Create a chat thread
+      console.log('[CRESTAL] Creating chat thread...');
+      const chatResponse = await axios.post(
+        `${this.apiUrl}/chats`,
+        {},
         {
-          messages: [
-            {
-              role: 'system',
-              content: 'You are an expert DeFi portfolio rebalancer specializing in Monad testnet token analysis. Provide JSON-formatted rebalancing strategies.'
-            },
-            {
-              role: 'user', 
-              content: prompt
-            }
-          ],
-          model: 'gpt-4o-mini',
-          max_tokens: 2000,
-          temperature: 0.1
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        }
+      );
+
+      const chatId = chatResponse.data.id;
+      console.log('[CRESTAL] Chat thread created:', chatId);
+
+      // Step 2: Send the analysis prompt as a message
+      console.log('[CRESTAL] Sending portfolio analysis request...');
+      const messageResponse = await axios.post(
+        `${this.apiUrl}/chats/${chatId}/messages`,
+        {
+          message: prompt,
+          stream: false, // Non-streaming for simpler parsing
         },
         {
           headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
             'Content-Type': 'application/json',
-            'x-api-key': this.apiKey,
           },
           timeout: 60000, // 60 second timeout for AI analysis
         }
       );
 
-      console.log('Crestal AI analysis completed:', response.data);
+      console.log('[CRESTAL] AI analysis completed');
 
-      // Parse Crestal response - extract content from completion
+      // Parse Crestal response - it returns an array: [{ "message": "actual AI response" }]
       let aiContent = '';
-      if (response.data.choices && response.data.choices[0] && response.data.choices[0].message) {
-        aiContent = response.data.choices[0].message.content;
-      } else if (response.data.content) {
-        aiContent = response.data.content;
-      } else if (typeof response.data === 'string') {
-        aiContent = response.data;
+
+      if (Array.isArray(messageResponse.data) && messageResponse.data.length > 0) {
+        // Crestal returns array format
+        aiContent = messageResponse.data[0].message || '';
+        console.log('[CRESTAL] Extracted message from array response');
+      } else if (messageResponse.data.message) {
+        aiContent = messageResponse.data.message;
+      } else if (messageResponse.data.content) {
+        aiContent = messageResponse.data.content;
+      } else if (typeof messageResponse.data === 'string') {
+        aiContent = messageResponse.data;
       }
 
-      console.log('AI Response Content:', aiContent);
+      console.log('[CRESTAL] AI Response Content (first 500 chars):', aiContent.substring(0, 500));
 
-      // Try to extract JSON from the AI response
+      // Try to extract JSON from the AI response - handle markdown code blocks
       let parsedData: any = {};
-      const jsonMatch = aiContent.match(/\{[\s\S]*\}/);
+
+      // Remove markdown code blocks if present
+      let cleanContent = aiContent.trim();
+      if (cleanContent.startsWith('```')) {
+        cleanContent = cleanContent.replace(/^```(?:json)?\s*/, '').replace(/```\s*$/, '');
+      }
+
+      // Extract JSON
+      const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
           parsedData = JSON.parse(jsonMatch[0]);
+          console.log('[CRESTAL] Successfully parsed JSON from AI response');
+          console.log('[CRESTAL] Parsed trades count:', parsedData.trades?.length || 0);
         } catch (e) {
-          console.error('Failed to parse AI JSON response:', e);
+          console.error('[CRESTAL] Failed to parse AI JSON response:', e);
+          console.log('[CRESTAL] JSON match was:', jsonMatch[0].substring(0, 200));
         }
+      } else {
+        console.error('[CRESTAL] No JSON found in AI response');
       }
 
-      // Parse into our strategy format
+      // Parse into our strategy format - ALWAYS show Crestal's message!
       const strategy: RebalanceStrategy = {
         trades: parsedData.trades || [],
-        rationale: parsedData.rationale || 'AI-generated rebalancing strategy based on comprehensive token analysis',
+        rationale: parsedData.rationale || aiContent || 'AI-generated rebalancing strategy',
         estimatedGas: parsedData.estimatedGas || '0.01 ETH',
       };
 
-      console.log('Parsed strategy:', strategy);
+      console.log('[CRESTAL] Final strategy:', {
+        tradesCount: strategy.trades.length,
+        rationaleLength: strategy.rationale.length,
+        rationalePreview: strategy.rationale.substring(0, 200),
+      });
+
       return strategy;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        console.error('Crestal API Error:', {
+        console.error('[CRESTAL] API Error:', {
           status: error.response?.status,
           message: error.response?.data?.message || error.message,
           endpoint: error.config?.url,
+          fullResponse: error.response?.data,
         });
       } else {
-        console.error('Error calling Crestal AI:', error);
+        console.error('[CRESTAL] Error calling Crestal AI:', error);
       }
 
-      // Fallback to simple algorithm when Crestal is unavailable
-      console.log('Falling back to built-in rebalancing algorithm...');
-      return this.fallbackRebalanceAlgorithm(holdings, targets);
+      // NO FALLBACK - throw error so user sees what went wrong
+      throw new Error(`Crestal AI API failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   /**
-   * Advanced fallback algorithm if AI APIs are unavailable
-   * Considers all Monorail data: confidence, categories, liquidity
+   * REMOVED FALLBACK - Crestal AI must work or fail visibly
    */
   private fallbackRebalanceAlgorithm(
     holdings: PortfolioHolding[],
@@ -401,20 +439,15 @@ REQUIRED OUTPUT FORMAT (JSON only, no markdown):
 }
 
 /**
- * Factory function to create the appropriate rebalancer based on configuration
+ * Factory function to create Crestal rebalancer - NO FALLBACKS!
  */
-export function createRebalancer(): OpenAIRebalancer | CrestalRebalancer {
-  const openaiKey = process.env.OPENAI_API_KEY;
+export function createRebalancer(): CrestalRebalancer {
   const crestalKey = process.env.CRESTAL_API_KEY;
 
-  if (crestalKey) {
-    console.log('Using Crestal IntentKit for AI rebalancing');
-    return new CrestalRebalancer();
-  } else if (openaiKey) {
-    console.log('Using OpenAI for AI rebalancing');
-    return new OpenAIRebalancer(openaiKey);
-  } else {
-    console.warn('No AI API keys configured, using fallback algorithm');
-    return new CrestalRebalancer(); // Will use fallback
+  if (!crestalKey) {
+    throw new Error('CRESTAL_API_KEY not configured in environment variables');
   }
+
+  console.log('[AI] Using Crestal AI for portfolio rebalancing');
+  return new CrestalRebalancer();
 }

@@ -104,12 +104,8 @@ export default function Home() {
 
   // Delegation parameters
   const [delegationParams, setDelegationParams] = useState({
-    maxTradesPerDay: 10,
-    maxTradeAmount: 100, // USD
-    allowedTokens: ["MON", "USDC", "USDT", "WETH"],
-    rebalanceFrequency: "manual", // "manual", "daily", "weekly"
     riskLevel: "medium", // "low", "medium", "high"
-    expirationDays: 30,
+    rebalanceInterval: 24, // hours: 1, 4, 12, 24, 168 (week)
   });
 
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -148,6 +144,8 @@ export default function Home() {
     loadingQuote: boolean;
     allTokens: any[];
     loadingTokens: boolean;
+    fromTokenSearch: string;
+    toTokenSearch: string;
   }>({
     fromToken: "",
     toToken: "",
@@ -160,7 +158,12 @@ export default function Home() {
     loadingQuote: false,
     allTokens: [],
     loadingTokens: false,
+    fromTokenSearch: "",
+    toTokenSearch: "",
   });
+
+  // Portfolio search
+  const [portfolioSearch, setPortfolioSearch] = useState("");
 
   // Notification management functions
   const addNotification = (
@@ -211,12 +214,15 @@ export default function Home() {
     if (isConnected && address && !smartAccountAddress && mounted) {
       activityLogger.success("WALLET", `Wallet connected: ${address}`);
       setShowHero(false);
-      setStep("delegation");
+      setStep("portfolio");
       addNotification(
         "info",
         "Wallet Connected",
         `${address.slice(0, 10)}...${address.slice(-6)}`
       );
+
+      // Auto-fetch portfolio when wallet connects
+      fetchPortfolio();
 
       // Set deterministic agent address immediately on connection
       const deterministicAgentAddr = getDeterministicAgentAddress(address);
@@ -359,6 +365,15 @@ export default function Home() {
     setError("");
     setSuccess("");
     try {
+      // Get the provider that was used for connection to avoid wallet conflicts
+      const provider = connectors.find((c) => c.id === "injected")?.getProvider
+        ? await connectors.find((c) => c.id === "injected")?.getProvider()
+        : window.ethereum;
+
+      if (!provider) {
+        throw new Error("No wallet provider found");
+      }
+
       // Validate chainId - must be on Monad testnet
       if (!chainId || chainId !== 10143) {
         activityLogger.warning(
@@ -370,8 +385,8 @@ export default function Home() {
         );
 
         try {
-          // Try to switch to Monad Testnet
-          await window.ethereum?.request({
+          // Try to switch to Monad Testnet using the same provider
+          await provider.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: "0x279F" }], // 10143 in hex
           });
@@ -384,7 +399,7 @@ export default function Home() {
           await new Promise((resolve) => setTimeout(resolve, 500));
 
           // Check if switch was successful
-          const newChainId = await window.ethereum?.request({
+          const newChainId = await provider.request({
             method: "eth_chainId",
           });
           if (parseInt(newChainId, 16) === 10143) {
@@ -398,7 +413,7 @@ export default function Home() {
           if (switchError.code === 4902) {
             // Chain doesn't exist, add it
             try {
-              await window.ethereum?.request({
+              await provider.request({
                 method: "wallet_addEthereumChain",
                 params: [
                   {
@@ -445,13 +460,8 @@ export default function Home() {
         type: "open",
         requestSignature: false, // Just create the delegation, don't sign yet
         // Include user-configured delegation parameters with proper type conversion
-        maxTradeAmount: String(delegationParams.maxTradeAmount),
-        maxTradesPerDay: String(delegationParams.maxTradesPerDay),
         riskLevel: String(delegationParams.riskLevel),
-        expirationDays: String(delegationParams.expirationDays),
-        allowedTokens: Array.isArray(delegationParams.allowedTokens)
-          ? delegationParams.allowedTokens
-          : [delegationParams.allowedTokens].filter(Boolean),
+        rebalanceInterval: String(delegationParams.rebalanceInterval),
       });
 
       const unsignedDelegation = delegationResponse.data.delegation;
@@ -459,12 +469,13 @@ export default function Home() {
       setSuccess("Please sign the delegation message in MetaMask...");
 
       // Step 2: Ask user to sign the delegation via MetaMask
-      if (!window.ethereum) {
-        throw new Error("MetaMask not found");
+      if (!provider) {
+        throw new Error("Wallet provider not found");
       }
 
-      // Get the current chainId from MetaMask to ensure it matches
-      const currentChainId = await window.ethereum.request({
+      // Get the current chainId from the connected wallet to ensure it matches
+      // Use the same provider that was used for connection
+      const currentChainId = await provider.request({
         method: "eth_chainId",
       });
       const currentChainIdDecimal = parseInt(currentChainId, 16);
@@ -497,15 +508,10 @@ DELEGATION DETAILS:
 • Delegation Salt: ${unsignedDelegation.salt}
 
 RESTRICTIONS:
-• Max Trade Amount: $${delegationParams.maxTradeAmount} USD per trade
-• Daily Trade Limit: ${delegationParams.maxTradesPerDay} trades per day
-• Risk Level: ${delegationParams.riskLevel.toUpperCase()}
-• Expiration: ${delegationParams.expirationDays} days from creation
-${
-  delegationParams.allowedTokens.length > 0
-    ? `• Allowed Tokens: ${delegationParams.allowedTokens.join(", ")}`
-    : "• All tokens allowed"
-}
+• Risk Appetite: ${delegationParams.riskLevel.toUpperCase()}
+• Rebalance Frequency: Every ${delegationParams.rebalanceInterval} hour${
+        delegationParams.rebalanceInterval === 1 ? "" : "s"
+      }
 • Standard: ERC-7710 Delegation with Caveats
 
 By signing this message, I grant permission for the AI agent to execute trades within these restrictions.`;
@@ -513,7 +519,8 @@ By signing this message, I grant permission for the AI agent to execute trades w
       console.log("Requesting signature for delegation authorization");
 
       // Use simple personal signature instead of typed data (more reliable)
-      const signature = await window.ethereum.request({
+      // Use the same provider that was used for connection
+      const signature = await provider.request({
         method: "personal_sign",
         params: [message, address],
       });
@@ -532,8 +539,10 @@ By signing this message, I grant permission for the AI agent to execute trades w
         "DELEGATION",
         "Delegation created! Agent is now authorized to trade."
       );
-      setSuccess(
-        "Delegation signed and created! Agent can now trade from your wallet."
+      addNotification(
+        "info",
+        "Delegation Created",
+        "Agent is now authorized to trade from your wallet!"
       );
 
       // Auto-fetch portfolio
@@ -829,9 +838,12 @@ By signing this message, I grant permission for the AI agent to execute trades w
         `Loaded ${response.data.tokenCount} tokens for swapping (${response.data.userHoldingsCount} in your wallet)`
       );
 
+      const tokens = response.data.tokens || [];
+      console.log(`Received ${tokens.length} tokens from discover-tokens API`);
+
       setSwapState((prev) => ({
         ...prev,
-        allTokens: response.data.tokens,
+        allTokens: tokens.length > 0 ? tokens : holdings, // Use holdings as fallback if no tokens returned
         loadingTokens: false,
       }));
     } catch (err: any) {
@@ -862,26 +874,30 @@ By signing this message, I grant permission for the AI agent to execute trades w
 
     setSwapState((prev) => ({ ...prev, loadingQuote: true }));
     try {
+      // Get from token decimals for WEI conversion
+      const fromTokenData = swapState.allTokens.find(
+        (t: any) => t.address === fromToken
+      );
+      const fromDecimals = fromTokenData?.decimals || 18;
+
       const response = await axios.get(
-        `/api/swap/quote?fromToken=${fromToken}&toToken=${toToken}&amount=${amount}&slippage=${swapState.slippage}`
+        `/api/swap/quote?fromToken=${fromToken}&toToken=${toToken}&amount=${amount}&slippage=${swapState.slippage}&sender=${address}&decimals=${fromDecimals}`
       );
 
-      // Get token decimals for proper formatting
-      const toTokenData = swapState.allTokens.find(
-        (t: any) => t.address === toToken
-      );
-      const toTokenDecimals = toTokenData?.decimals || 18;
+      // Monorail returns output_formatted which is human-readable
+      const toAmount = response.data.toAmount || "0";
 
-      // Format the amount from wei to human-readable
-      const formattedToAmount = formatTokenAmount(
-        response.data.toAmount || "0",
-        toTokenDecimals
-      );
+      console.log("Quote received:", {
+        fromAmount: amount,
+        toAmount,
+        exchangeRate: response.data.exchangeRate,
+        priceImpact: response.data.priceImpact,
+      });
 
       setSwapState((prev) => ({
         ...prev,
         quote: response.data.quote,
-        toAmount: formattedToAmount,
+        toAmount: toAmount,
         loadingQuote: false,
       }));
     } catch (err: any) {
@@ -902,18 +918,116 @@ By signing this message, I grant permission for the AI agent to execute trades w
       return;
     }
 
-    activityLogger.info("SWAP", `Swapping ${swapState.fromAmount} tokens...`);
+    activityLogger.info(
+      "SWAP",
+      `Preparing swap: ${swapState.fromAmount} tokens...`
+    );
     setLoading(true);
     setError("");
+
     try {
+      // Get token decimals for proper conversion to WEI
+      const fromTokenData = swapState.allTokens.find(
+        (t: any) => t.address === swapState.fromToken
+      );
+      const fromTokenDecimals = fromTokenData?.decimals || 18;
+
+      // Check if we need to approve ERC20 tokens (not needed for native MON)
+      const isFromTokenNative =
+        swapState.fromToken === "0x0000000000000000000000000000000000000000";
+
+      if (!isFromTokenNative) {
+        activityLogger.info("SWAP", "Checking token approval...");
+
+        // Import approval functions
+        const { checkTokenApproval, approveToken, waitForTransaction } =
+          await import("@/lib/utils/token-approval");
+
+        // Check if approval is needed
+        const monorailContractAddress =
+          "0x525b929fcd6a64aff834f4eecc6e860486ced700"; // From transaction logs
+
+        const approvalCheck = await checkTokenApproval(
+          swapState.fromToken as `0x${string}`,
+          address as `0x${string}`,
+          monorailContractAddress,
+          swapState.fromAmount,
+          fromTokenDecimals
+        );
+
+        if (approvalCheck.isApprovalNeeded) {
+          activityLogger.info(
+            "SWAP",
+            `Requesting approval for ${swapState.fromAmount} tokens...`
+          );
+          setError("Please approve token spending in MetaMask...");
+
+          const approveTxHash = await approveToken(
+            swapState.fromToken as `0x${string}`,
+            monorailContractAddress,
+            approvalCheck.approvalAmountWei
+          );
+
+          activityLogger.info("SWAP", "Waiting for approval confirmation...");
+          setError("Waiting for approval confirmation...");
+
+          const approvalSuccess = await waitForTransaction(approveTxHash);
+          if (!approvalSuccess) {
+            throw new Error("Token approval failed");
+          }
+
+          activityLogger.info("SWAP", "✅ Token approval confirmed!");
+          setError("");
+        } else {
+          activityLogger.info("SWAP", "✅ Token already approved");
+        }
+      }
+
+      // Get the prepared transaction from API
       const response = await axios.post("/api/swap/execute", {
         fromToken: swapState.fromToken,
         toToken: swapState.toToken,
         amount: swapState.fromAmount,
         fromAddress: address,
         slippage: swapState.slippage,
+        decimals: fromTokenDecimals, // Pass decimals for proper WEI conversion
       });
 
+      // DEBUG: Log the raw API response
+      console.log("Raw API response:", {
+        success: response.data.success,
+        hasTransaction: !!response.data.transaction,
+        transactionValue: response.data.transaction?.value,
+        transactionValueType: typeof response.data.transaction?.value,
+      });
+
+      const { transaction } = response.data;
+
+      // DEBUG: Log after destructuring
+      console.log("After destructuring:", {
+        hasTransaction: !!transaction,
+        transactionValue: transaction?.value,
+        transactionValueType: typeof transaction?.value,
+      });
+
+      if (!transaction) {
+        throw new Error("No transaction data received from API");
+      }
+
+      if (!transaction.to || !transaction.data || transaction.data === "0x") {
+        throw new Error(
+          "Invalid transaction data from Monorail. Missing calldata or target address."
+        );
+      }
+
+      console.log("Transaction validation:", {
+        to: transaction.to,
+        dataLength: transaction.data?.length || 0,
+        value: transaction.value,
+        hasCalldata: transaction.data && transaction.data !== "0x",
+      });
+
+      // Get token symbols for logging
       const fromTokenSymbol =
         swapState.allTokens.find((t: any) => t.address === swapState.fromToken)
           ?.symbol || "Unknown";
@@ -921,16 +1035,183 @@ By signing this message, I grant permission for the AI agent to execute trades w
         swapState.allTokens.find((t: any) => t.address === swapState.toToken)
           ?.symbol || "Unknown";
 
-      const txHash = response.data.txHash || response.data.hash || "unknown";
+      activityLogger.info(
+        "SWAP",
+        "Sending transaction to wallet for approval..."
+      );
+
+      // Send transaction to user's wallet using window.ethereum
+      if (!window.ethereum) {
+        throw new Error("MetaMask not found. Please install MetaMask.");
+      }
+
+      // Use Monorail's gas estimate directly - no buffer needed
+      const gasEstimate = response.data.quote?.estimatedGas;
+      const finalGasLimit = gasEstimate ? parseInt(gasEstimate) : 200000;
+
+      // Get current gas price to calculate actual cost
+      let actualGasPriceWei = 1e9; // Default 1 gwei
+      try {
+        const gasPriceHex = await window.ethereum.request({
+          method: "eth_gasPrice",
+        });
+        actualGasPriceWei = parseInt(gasPriceHex, 16);
+      } catch (e) {
+        console.warn("Could not get gas price, using default 1 gwei");
+      }
+
+      const actualGasPriceGwei = actualGasPriceWei / 1e9;
+      const estimatedCostWei = finalGasLimit * actualGasPriceWei;
+      const estimatedCostMON = estimatedCostWei / 1e18;
+
+      console.log("Gas estimate:", {
+        gasLimit: finalGasLimit,
+        gasPriceGwei: actualGasPriceGwei.toFixed(2),
+        estimatedCostMON: estimatedCostMON.toFixed(4),
+        isExpensive: estimatedCostMON > 0.1,
+      });
+
+      // Use Monorail's exact gas estimate - no buffer
+      // Monorail provides accurate estimates, extra gas might cause issues
+      const txParams: any = {
+        from: address,
+        to: transaction.to,
+        data: transaction.data,
+        value: transaction.value,
+        gas: `0x${finalGasLimit.toString(16)}`,
+        // Let MetaMask handle gas pricing (EIP-1559)
+      };
+
+      // Validate transaction format before sending
+      if (!transaction.value.startsWith("0x")) {
+        throw new Error(
+          `Invalid transaction value format: ${transaction.value}`
+        );
+      }
+
+      if (!transaction.data.startsWith("0x")) {
+        throw new Error(`Invalid transaction data format: ${transaction.data}`);
+      }
+
+      console.log("Transaction params:", {
+        to: txParams.to,
+        value: txParams.value,
+        valueWei: transaction.value,
+        valueMON: parseInt(transaction.value, 16) / 1e18,
+        gasLimit: finalGasLimit,
+        exactGasFromMonorail: true,
+        gasPricingModel: "EIP-1559 (MetaMask managed)",
+        dataLength: transaction.data?.length || 0,
+      });
+
+      activityLogger.info(
+        "SWAP",
+        `Gas: ${finalGasLimit} units (EIP-1559 pricing by wallet)`
+      );
+
+      // Check user balance before transaction
+      try {
+        const balanceHex = await window.ethereum.request({
+          method: "eth_getBalance",
+          params: [address, "latest"],
+        });
+        const balanceMON = parseInt(balanceHex, 16) / 1e18;
+        const requiredMON = parseInt(transaction.value, 16) / 1e18;
+
+        console.log("Balance check:", {
+          userBalance: balanceMON.toFixed(4) + " MON",
+          required: requiredMON.toFixed(4) + " MON",
+          sufficient: balanceMON >= requiredMON,
+        });
+
+        if (balanceMON < requiredMON) {
+          throw new Error(
+            `Insufficient MON balance. Need ${requiredMON.toFixed(
+              4
+            )} MON, have ${balanceMON.toFixed(4)} MON`
+          );
+        }
+      } catch (balanceError) {
+        console.warn("Could not check balance:", balanceError);
+      }
+
+      // CRITICAL: Test transaction with eth_estimateGas before sending
+      try {
+        activityLogger.info(
+          "SWAP",
+          "Testing transaction with gas estimation..."
+        );
+        const estimatedGasHex = await window.ethereum.request({
+          method: "eth_estimateGas",
+          params: [txParams],
+        });
+
+        const networkEstimate = parseInt(estimatedGasHex, 16);
+        console.log("Gas estimation result:", {
+          monorailEstimate: finalGasLimit,
+          networkEstimate: networkEstimate,
+          estimationPassed: true,
+        });
+
+        // If network needs more gas, use that
+        if (networkEstimate > finalGasLimit) {
+          txParams.gas = `0x${networkEstimate.toString(16)}`;
+          console.log(
+            "Updated gas limit to network estimate:",
+            networkEstimate
+          );
+        }
+      } catch (gasError) {
+        console.error(
+          "Gas estimation failed - transaction would revert:",
+          gasError
+        );
+        throw new Error(`Transaction would fail: ${gasError.message}`);
+      }
+
+      const txHash = await window.ethereum.request({
+        method: "eth_sendTransaction",
+        params: [txParams],
+      });
 
       activityLogger.success(
         "SWAP",
-        `Swap executed! ${swapState.fromAmount} ${fromTokenSymbol} → ${swapState.toAmount} ${toTokenSymbol}`,
+        `Transaction submitted! ${swapState.fromAmount} ${fromTokenSymbol} → ${response.data.toAmount} ${toTokenSymbol}`,
         `TX: ${txHash}`
       );
 
+      // Wait for transaction confirmation
+      activityLogger.info("SWAP", "Waiting for transaction confirmation...");
+
+      // Check transaction status after a delay
+      setTimeout(async () => {
+        try {
+          const receipt = await window.ethereum.request({
+            method: "eth_getTransactionReceipt",
+            params: [txHash],
+          });
+
+          if (receipt) {
+            if (receipt.status === "0x1") {
+              activityLogger.success(
+                "SWAP",
+                "Transaction confirmed successfully!"
+              );
+            } else {
+              activityLogger.error(
+                "SWAP",
+                "Transaction failed on blockchain",
+                `TX: ${txHash}`
+              );
+            }
+          }
+        } catch (receiptError) {
+          console.log("Could not check receipt:", receiptError);
+        }
+      }, 5000); // Check after 5 seconds
+
       // Index transaction with enhanced indexer (Envio pattern)
-      if (txHash !== "unknown") {
+      if (txHash) {
         await assetNestIndexer.indexTransaction({
           hash: txHash,
           from: address || "",
@@ -944,7 +1225,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
               fromSymbol: fromTokenSymbol,
               toSymbol: toTokenSymbol,
               fromAmount: swapState.fromAmount,
-              toAmount: swapState.toAmount,
+              toAmount: response.data.toAmount,
             },
           },
         });
@@ -954,10 +1235,8 @@ By signing this message, I grant permission for the AI agent to execute trades w
         "info",
         "Swap Executed",
         `${swapState.fromAmount} ${fromTokenSymbol} → ${
-          swapState.toAmount
-        } ${toTokenSymbol}${
-          txHash !== "unknown" ? ` | TX: ${txHash.slice(0, 10)}...` : ""
-        }`
+          response.data.toAmount
+        } ${toTokenSymbol}${txHash ? ` | TX: ${txHash.slice(0, 10)}...` : ""}`
       );
 
       // Refresh portfolio
@@ -976,6 +1255,8 @@ By signing this message, I grant permission for the AI agent to execute trades w
         loadingQuote: false,
         allTokens: swapState.allTokens, // Keep token list after swap
         loadingTokens: false,
+        fromTokenSearch: "",
+        toTokenSearch: "",
       });
     } catch (err: any) {
       console.error("Swap execution error:", err);
@@ -1466,49 +1747,21 @@ By signing this message, I grant permission for the AI agent to execute trades w
                             </h4>
                             <div className="space-y-3">
                               <div className="grid grid-cols-2 gap-4">
-                                <div className="p-3 bg-gray-800/50 rounded-lg border border-green-400/30">
-                                  <div className="text-xs text-gray-400 uppercase mb-1">
-                                    Max Trade Amount
-                                  </div>
-                                  <div className="text-lg font-bold text-green-400">
-                                    ${delegationParams.maxTradeAmount} per trade
-                                  </div>
-                                </div>
-                                <div className="p-3 bg-gray-800/50 rounded-lg border border-blue-400/30">
-                                  <div className="text-xs text-gray-400 uppercase mb-1">
-                                    Daily Trade Limit
-                                  </div>
-                                  <div className="text-lg font-bold text-blue-400">
-                                    {delegationParams.maxTradesPerDay}{" "}
-                                    trades/day
-                                  </div>
-                                </div>
                                 <div className="p-3 bg-gray-800/50 rounded-lg border border-purple-400/30">
                                   <div className="text-xs text-gray-400 uppercase mb-1">
-                                    Risk Level
+                                    Risk Appetite
                                   </div>
                                   <div className="text-lg font-bold text-purple-400 capitalize">
                                     {delegationParams.riskLevel}
                                   </div>
                                 </div>
-                                <div className="p-3 bg-gray-800/50 rounded-lg border border-orange-400/30">
+                                <div className="p-3 bg-gray-800/50 rounded-lg border border-blue-400/30">
                                   <div className="text-xs text-gray-400 uppercase mb-1">
-                                    Expiration
+                                    Rebalance Frequency
                                   </div>
-                                  <div className="text-lg font-bold text-orange-400">
-                                    {delegationParams.expirationDays} days
+                                  <div className="text-lg font-bold text-blue-400">
+                                    Every {delegationParams.rebalanceInterval}h
                                   </div>
-                                </div>
-                              </div>
-
-                              <div className="p-3 bg-gray-800/50 rounded-lg border border-red-400/30">
-                                <div className="text-xs text-gray-400 uppercase mb-2">
-                                  Allowed Tokens
-                                </div>
-                                <div className="text-sm font-bold text-red-400">
-                                  {delegationParams.allowedTokens.length > 0
-                                    ? delegationParams.allowedTokens.join(", ")
-                                    : "All tokens allowed"}
                                 </div>
                               </div>
 
@@ -1547,45 +1800,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
                           <div className="grid grid-cols-2 gap-4">
                             <div>
                               <label className="block text-sm text-gray-400 mb-2">
-                                Max Trade Amount (USD)
-                              </label>
-                              <input
-                                type="number"
-                                value={delegationParams.maxTradeAmount}
-                                onChange={(e) =>
-                                  setDelegationParams((prev) => ({
-                                    ...prev,
-                                    maxTradeAmount:
-                                      parseInt(e.target.value) || 0,
-                                  }))
-                                }
-                                className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
-                                min="1"
-                                max="10000"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-sm text-gray-400 mb-2">
-                                Max Trades Per Day
-                              </label>
-                              <input
-                                type="number"
-                                value={delegationParams.maxTradesPerDay}
-                                onChange={(e) =>
-                                  setDelegationParams((prev) => ({
-                                    ...prev,
-                                    maxTradesPerDay:
-                                      parseInt(e.target.value) || 0,
-                                  }))
-                                }
-                                className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
-                                min="1"
-                                max="100"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-sm text-gray-400 mb-2">
-                                Risk Level
+                                Risk Appetite
                               </label>
                               <select
                                 value={delegationParams.riskLevel}
@@ -1600,143 +1815,33 @@ By signing this message, I grant permission for the AI agent to execute trades w
                                 }
                                 className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
                               >
-                                <option value="low">Low Risk</option>
-                                <option value="medium">Medium Risk</option>
-                                <option value="high">High Risk</option>
+                                <option value="low">Conservative</option>
+                                <option value="medium">Moderate</option>
+                                <option value="high">Aggressive</option>
                               </select>
                             </div>
                             <div>
                               <label className="block text-sm text-gray-400 mb-2">
-                                Expiration (Days)
+                                Rebalance Frequency
                               </label>
-                              <input
-                                type="number"
-                                value={delegationParams.expirationDays}
+                              <select
+                                value={
+                                  delegationParams.rebalanceInterval || "24"
+                                }
                                 onChange={(e) =>
                                   setDelegationParams((prev) => ({
                                     ...prev,
-                                    expirationDays:
-                                      parseInt(e.target.value) || 0,
+                                    rebalanceInterval: parseInt(e.target.value),
                                   }))
                                 }
                                 className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white"
-                                min="1"
-                                max="365"
-                              />
-                            </div>
-                          </div>
-                          <div className="mt-4">
-                            <label className="block text-sm text-gray-400 mb-2">
-                              Token Restrictions
-                            </label>
-                            <div className="space-y-3">
-                              <div className="flex items-center gap-3 mb-3">
-                                <input
-                                  type="checkbox"
-                                  id="restrictTokens"
-                                  checked={
-                                    delegationParams.allowedTokens.length > 0
-                                  }
-                                  onChange={(e) =>
-                                    setDelegationParams((prev) => ({
-                                      ...prev,
-                                      allowedTokens: e.target.checked
-                                        ? ["MON", "USDC", "USDT", "WETH"]
-                                        : [],
-                                    }))
-                                  }
-                                  className="w-4 h-4 text-red-400 bg-gray-800 border-gray-600 rounded focus:ring-red-400 focus:ring-2"
-                                />
-                                <label
-                                  htmlFor="restrictTokens"
-                                  className="text-sm text-white cursor-pointer"
-                                >
-                                  Enable token restrictions (only allow specific
-                                  tokens)
-                                </label>
-                              </div>
-
-                              {delegationParams.allowedTokens.length > 0 && (
-                                <>
-                                  <div className="text-xs text-yellow-400 mb-2">
-                                    WARNING: AI will ONLY be able to trade these
-                                    tokens:
-                                  </div>
-                                  <div className="grid grid-cols-2 gap-2">
-                                    {[
-                                      "MON",
-                                      "USDC",
-                                      "USDT",
-                                      "WETH",
-                                      "BTC",
-                                      "ETH",
-                                    ].map((token) => (
-                                      <label
-                                        key={token}
-                                        className="flex items-center gap-2 p-2 bg-gray-800/50 rounded"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={delegationParams.allowedTokens.includes(
-                                            token
-                                          )}
-                                          onChange={(e) => {
-                                            const newTokens = e.target.checked
-                                              ? [
-                                                  ...delegationParams.allowedTokens,
-                                                  token,
-                                                ]
-                                              : delegationParams.allowedTokens.filter(
-                                                  (t) => t !== token
-                                                );
-                                            setDelegationParams((prev) => ({
-                                              ...prev,
-                                              allowedTokens: newTokens,
-                                            }));
-                                          }}
-                                          className="w-3 h-3 text-green-400 bg-gray-700 border-gray-600 rounded focus:ring-green-400 focus:ring-1"
-                                        />
-                                        <span className="text-sm text-white">
-                                          {token}
-                                        </span>
-                                      </label>
-                                    ))}
-                                  </div>
-                                  <input
-                                    type="text"
-                                    placeholder="Add custom token (e.g., LINK)"
-                                    className="w-full p-2 bg-gray-800 border border-gray-600 rounded text-white text-sm"
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        const token = e.currentTarget.value
-                                          .trim()
-                                          .toUpperCase();
-                                        if (
-                                          token &&
-                                          !delegationParams.allowedTokens.includes(
-                                            token
-                                          )
-                                        ) {
-                                          setDelegationParams((prev) => ({
-                                            ...prev,
-                                            allowedTokens: [
-                                              ...prev.allowedTokens,
-                                              token,
-                                            ],
-                                          }));
-                                          e.currentTarget.value = "";
-                                        }
-                                      }
-                                    }}
-                                  />
-                                </>
-                              )}
-
-                              {delegationParams.allowedTokens.length === 0 && (
-                                <div className="text-xs text-green-400">
-                                  AI can trade ANY tokens (no restrictions)
-                                </div>
-                              )}
+                              >
+                                <option value="1">Every Hour</option>
+                                <option value="4">Every 4 Hours</option>
+                                <option value="12">Every 12 Hours</option>
+                                <option value="24">Daily</option>
+                                <option value="168">Weekly</option>
+                              </select>
                             </div>
                           </div>
                         </div>
@@ -1842,7 +1947,7 @@ By signing this message, I grant permission for the AI agent to execute trades w
                             REVOKE DELEGATION
                           </button>
                           <button
-                            onClick={fetchPortfolio}
+                            onClick={() => fetchPortfolio()}
                             disabled={loading}
                             className="btn btn-primary text-lg"
                           >
@@ -1879,371 +1984,410 @@ By signing this message, I grant permission for the AI agent to execute trades w
                   <div className="text-gray-400 mt-2">TOTAL VALUE</div>
                 </div>
 
+                {/* AI Portfolio Analysis - Moved up for better UX */}
+                {holdings.length > 0 && (
+                  <div className="border-2 border-purple-400/50 p-6 bg-black rounded-lg shadow-[0_0_30px_rgba(147,51,234,0.3)]">
+                    <h3 className="text-2xl font-bold mb-4 text-purple-400 text-center">
+                      AI PORTFOLIO ANALYSIS
+                    </h3>
+                    <p className="text-gray-300 text-center mb-6">
+                      Let our AI analyze your portfolio and suggest optimal
+                      rebalancing trades
+                    </p>
+                    <button
+                      onClick={handleComputeStrategy}
+                      disabled={loading}
+                      className="btn btn-success w-full text-lg"
+                    >
+                      {loading
+                        ? "ANALYZING..."
+                        : "🤖 GET AI ANALYSIS & SUGGESTIONS →"}
+                    </button>
+                  </div>
+                )}
+
                 {holdings.length > 0 ? (
                   <>
+                    {/* Portfolio Search */}
+                    <div className="mb-4">
+                      <input
+                        type="text"
+                        placeholder="Search your portfolio..."
+                        value={portfolioSearch || ""}
+                        onChange={(e) => setPortfolioSearch(e.target.value)}
+                        className="w-full p-3 bg-black border-2 border-cyan-400/50 rounded text-cyan-400 placeholder-cyan-400/50 hover:border-cyan-400 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/20 transition-all duration-300"
+                      />
+                    </div>
+
                     <div className="space-y-3">
-                      {holdings.map((h) => {
-                        // Format balance
-                        const balanceNum = parseFloat(h.balance || "0");
-                        const displayBalance = isNaN(balanceNum)
-                          ? "0.00"
-                          : balanceNum.toFixed(6).replace(/\.?0+$/, "");
+                      {holdings
+                        .filter(
+                          (h) =>
+                            portfolioSearch === "" ||
+                            h.symbol
+                              .toLowerCase()
+                              .includes(portfolioSearch.toLowerCase()) ||
+                            h.name
+                              .toLowerCase()
+                              .includes(portfolioSearch.toLowerCase()) ||
+                            h.token
+                              .toLowerCase()
+                              .includes(portfolioSearch.toLowerCase())
+                        )
+                        .map((h) => {
+                          // Format balance
+                          const balanceNum = parseFloat(h.balance || "0");
+                          const displayBalance = isNaN(balanceNum)
+                            ? "0.00"
+                            : balanceNum.toFixed(6).replace(/\.?0+$/, "");
 
-                        // Confidence color
-                        const confidence = parseFloat(h.pconf || "0");
-                        const confidenceColor =
-                          confidence >= 97
-                            ? "text-green-400"
-                            : confidence >= 50
-                            ? "text-yellow-400"
-                            : "text-red-400";
+                          // Confidence color
+                          const confidence = parseFloat(h.pconf || "0");
+                          const confidenceColor =
+                            confidence >= 97
+                              ? "text-green-400"
+                              : confidence >= 50
+                              ? "text-yellow-400"
+                              : "text-red-400";
 
-                        // Check if token is expanded
-                        const isExpanded = expandedToken === h.token;
+                          // Check if token is expanded
+                          const isExpanded = expandedToken === h.token;
 
-                        // Check for warnings
-                        const isFake = h.categories?.includes("fake");
-                        const isLowConfidence = confidence < 50;
+                          // Check for warnings
+                          const isFake = h.categories?.includes("fake");
+                          const isLowConfidence = confidence < 50;
 
-                        return (
-                          <div
-                            key={`${h.token}-${h.symbol}`}
-                            className={`p-4 rounded-lg border-2 ${
-                              isFake
-                                ? "bg-red-500/10 border-red-400/50"
-                                : isLowConfidence
-                                ? "bg-yellow-500/10 border-yellow-400/50"
-                                : "bg-black border-cyan-400/30"
-                            } hover:border-cyan-400 transition-all`}
-                          >
-                            {/* Main Token Info - Enhanced Layout */}
-                            <div className="grid grid-cols-12 gap-4 items-center">
-                              {/* Logo - 1 column */}
-                              <div className="col-span-1">
-                                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-gray-800 to-black border-2 border-cyan-400/50 flex items-center justify-center overflow-hidden shadow-lg">
-                                  {h.logo ? (
-                                    <img
-                                      src={h.logo}
-                                      alt={h.symbol}
-                                      className="w-full h-full object-cover rounded-full"
-                                      onError={(e) => {
-                                        const target =
-                                          e.target as HTMLImageElement;
-                                        target.style.display = "none";
-                                        const parent = target.parentElement;
-                                        if (parent) {
-                                          parent.innerHTML = `<div class="w-14 h-14 rounded-full bg-gradient-to-br from-cyan-500/20 to-purple-500/20 flex items-center justify-center border-2 border-cyan-400/50"><span class="text-lg font-bold text-cyan-400">${h.symbol.charAt(
-                                            0
-                                          )}</span></div>`;
-                                        }
-                                      }}
-                                    />
-                                  ) : h.symbol === "MON" ? (
-                                    <div className="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center">
+                          return (
+                            <div
+                              key={`${h.token}-${h.symbol}`}
+                              className={`p-4 rounded-lg border-2 ${
+                                isFake
+                                  ? "bg-red-500/10 border-red-400/50"
+                                  : isLowConfidence
+                                  ? "bg-yellow-500/10 border-yellow-400/50"
+                                  : "bg-black border-cyan-400/30"
+                              } hover:border-cyan-400 transition-all`}
+                            >
+                              {/* Main Token Info - Enhanced Layout */}
+                              <div className="grid grid-cols-12 gap-4 items-center">
+                                {/* Logo - 1 column */}
+                                <div className="col-span-1">
+                                  <div className="w-14 h-14 rounded-full bg-black border-2 border-cyan-400/50 flex items-center justify-center overflow-hidden shadow-[0_0_15px_rgba(0,255,247,0.3)]">
+                                    {h.logo ? (
                                       <img
-                                        src="/66c3711574e166ac115bba8a_Logo Mark.svg"
-                                        alt="MON"
-                                        className="w-6 h-6"
-                                        style={{
-                                          filter:
-                                            "brightness(0) saturate(100%) invert(56%) sepia(94%) saturate(6738%) hue-rotate(266deg) brightness(101%) contrast(101%)",
+                                        src={h.logo}
+                                        alt={h.symbol}
+                                        className="w-full h-full object-cover rounded-full"
+                                        onError={(e) => {
+                                          console.log(
+                                            `Logo failed to load for ${h.symbol}:`,
+                                            h.logo
+                                          );
+                                          const target =
+                                            e.target as HTMLImageElement;
+                                          target.style.display = "none";
+                                          const parent = target.parentElement;
+                                          if (parent) {
+                                            parent.innerHTML = `<div class="w-14 h-14 rounded-full bg-black flex items-center justify-center border-2 border-cyan-400/50"><span class="text-lg font-bold text-cyan-400">${h.symbol.charAt(
+                                              0
+                                            )}</span></div>`;
+                                          }
+                                        }}
+                                        onLoad={() => {
+                                          console.log(
+                                            `Logo loaded successfully for ${h.symbol}:`,
+                                            h.logo
+                                          );
                                         }}
                                       />
-                                    </div>
-                                  ) : (
-                                    <div className="w-14 h-14 rounded-full bg-gradient-to-br from-cyan-500/20 to-purple-500/20 flex items-center justify-center">
-                                      <span className="text-lg font-bold text-cyan-400">
-                                        {h.symbol.charAt(0)}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-
-                              {/* Token Name & Symbol - 3 columns */}
-                              <div className="col-span-3">
-                                <div className="space-y-1">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <h3 className="text-xl font-bold text-cyan-400 font-mono">
-                                      {h.symbol}
-                                    </h3>
-                                    {isFake && (
-                                      <span className="text-xs font-bold px-2 py-1 rounded bg-red-500 text-white animate-pulse">
-                                        FAKE
-                                      </span>
-                                    )}
-                                    {h.categories?.includes("verified") && (
-                                      <span className="text-xs font-bold px-2 py-1 rounded bg-green-500 text-black">
-                                        VERIFIED
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="text-sm text-gray-400 font-medium">
-                                    {h.name || "Unknown Token"}
-                                  </div>
-                                  <div className="flex flex-wrap gap-1">
-                                    {h.categories?.slice(0, 2).map((cat) => (
-                                      <span
-                                        key={cat}
-                                        className={`text-xs px-2 py-0.5 rounded font-bold border ${
-                                          cat === "ecosystem"
-                                            ? "bg-purple-500/20 border-purple-400 text-purple-400"
-                                            : cat === "lst"
-                                            ? "bg-blue-500/20 border-blue-400 text-blue-400"
-                                            : cat === "verified"
-                                            ? "bg-green-500/20 border-green-400 text-green-400"
-                                            : "bg-gray-800 border-gray-600 text-gray-300"
-                                        }`}
-                                      >
-                                        {cat.toUpperCase()}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* Values - 3 columns */}
-                              <div className="col-span-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="text-2xl font-bold text-white font-mono">
-                                    {formatUSD(h.valueUSD)}
-                                  </div>
-                                  <div className="text-sm text-gray-400 font-mono">
-                                    {displayBalance} {h.symbol}
-                                  </div>
-                                  <div className="text-xs text-gray-500 font-mono">
-                                    @ {formatUSD(h.price)}
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* Confidence & Allocation - 2 columns */}
-                              <div className="col-span-2 space-y-2">
-                                <div className="text-center">
-                                  <div
-                                    className={`text-lg font-bold font-mono ${confidenceColor}`}
-                                  >
-                                    {confidence}%
-                                  </div>
-                                  <div className="text-xs text-gray-500 uppercase">
-                                    Confidence
-                                  </div>
-                                </div>
-                                <div className="space-y-1">
-                                  <div className="text-xs text-gray-400 text-center font-mono">
-                                    {formatPercentage(h.percentage)}
-                                  </div>
-                                  <div className="bg-black border border-cyan-400/30 rounded-full h-2 overflow-hidden">
-                                    <div
-                                      className="h-full bg-gradient-to-r from-cyan-400 to-purple-400 shadow-[0_0_10px_rgba(0,255,247,0.5)]"
-                                      style={{
-                                        width: `${Math.min(
-                                          h.percentage,
-                                          100
-                                        )}%`,
-                                      }}
-                                    ></div>
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* More Info Button - 1 column */}
-                              <div className="col-span-1">
-                                <button
-                                  onClick={() =>
-                                    setExpandedToken(
-                                      isExpanded ? null : h.token
-                                    )
-                                  }
-                                  className="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-cyan-400/20 to-purple-400/20 hover:from-cyan-400/30 hover:to-purple-400/30 border border-cyan-400/50 text-cyan-400 text-xs font-bold transition-all hover:shadow-[0_0_15px_rgba(0,255,247,0.3)]"
-                                >
-                                  {isExpanded ? "▲" : "▼"}
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Expanded Details - Enhanced */}
-                            {isExpanded && (
-                              <div className="mt-6 pt-6 border-t-2 border-gradient-to-r from-cyan-400/30 via-purple-400/30 to-cyan-400/30 bg-gradient-to-r from-black via-gray-900/50 to-black rounded-lg p-6 shadow-xl">
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                  {/* Contract Address */}
-                                  <div className="space-y-2">
-                                    <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide">
-                                      Contract Address
-                                    </div>
-                                    <div className="font-mono text-xs bg-black/50 p-3 rounded border border-cyan-400/30 break-all">
-                                      {h.token ===
-                                      "0x0000000000000000000000000000000000000000" ? (
-                                        <span className="text-purple-400 font-bold">
-                                          Native MON Token
+                                    ) : h.symbol === "MON" ? (
+                                      <div className="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center">
+                                        <img
+                                          src="/66c3711574e166ac115bba8a_Logo Mark.svg"
+                                          alt="MON"
+                                          className="w-6 h-6"
+                                          style={{
+                                            filter:
+                                              "brightness(0) saturate(100%) invert(56%) sepia(94%) saturate(6738%) hue-rotate(266deg) brightness(101%) contrast(101%)",
+                                          }}
+                                        />
+                                      </div>
+                                    ) : (
+                                      <div className="w-14 h-14 rounded-full bg-black flex items-center justify-center border-2 border-cyan-400/50">
+                                        <span className="text-lg font-bold text-cyan-400">
+                                          {h.symbol.charAt(0)}
                                         </span>
-                                      ) : (
-                                        <span className="text-cyan-400">
-                                          {h.token}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Token Name & Symbol - 3 columns */}
+                                <div className="col-span-3">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <h3 className="text-xl font-bold text-cyan-400 font-mono">
+                                        {h.symbol}
+                                      </h3>
+                                      {isFake && (
+                                        <span className="text-xs font-bold px-2 py-1 rounded bg-red-500 text-white animate-pulse">
+                                          FAKE
+                                        </span>
+                                      )}
+                                      {h.categories?.includes("verified") && (
+                                        <span className="text-xs font-bold px-2 py-1 rounded bg-green-500 text-black">
+                                          VERIFIED
                                         </span>
                                       )}
                                     </div>
-                                    {h.token !==
-                                      "0x0000000000000000000000000000000000000000" && (
-                                      <a
-                                        href={`https://testnet.monadexplorer.com/address/${h.token}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-block text-xs text-blue-400 hover:text-blue-300 hover:underline transition-colors"
-                                      >
-                                        View on Explorer →
-                                      </a>
-                                    )}
-                                  </div>
-
-                                  {/* Token Details */}
-                                  <div className="space-y-4">
-                                    <div>
-                                      <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-2">
-                                        Token Details
-                                      </div>
-                                      <div className="space-y-2 text-sm">
-                                        <div className="flex justify-between bg-black/30 p-2 rounded">
-                                          <span className="text-gray-400">
-                                            Decimals:
-                                          </span>
-                                          <span className="text-white font-mono">
-                                            {h.decimals}
-                                          </span>
-                                        </div>
-                                        <div className="flex justify-between bg-black/30 p-2 rounded">
-                                          <span className="text-gray-400">
-                                            Price:
-                                          </span>
-                                          <span className="text-green-400 font-mono font-bold">
-                                            ${h.price.toFixed(6)}
-                                          </span>
-                                        </div>
-                                        <div className="flex justify-between bg-black/30 p-2 rounded">
-                                          <span className="text-gray-400">
-                                            24h Change:
-                                          </span>
-                                          <span className="text-gray-500 font-mono">
-                                            Unknown
-                                          </span>
-                                        </div>
-                                      </div>
+                                    <div className="text-sm text-gray-400 font-medium">
+                                      {h.name || "Unknown Token"}
                                     </div>
-                                  </div>
-
-                                  {/* MON Values */}
-                                  <div className="space-y-4">
-                                    <div>
-                                      <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-2">
-                                        MON Metrics
-                                      </div>
-                                      <div className="space-y-2 text-sm">
-                                        <div className="flex justify-between bg-black/30 p-2 rounded">
-                                          <span className="text-gray-400">
-                                            MON Value:
-                                          </span>
-                                          <span className="text-purple-400 font-mono font-bold">
-                                            {parseFloat(
-                                              h.monValue || "0"
-                                            ).toFixed(4)}{" "}
-                                            MON
-                                          </span>
-                                        </div>
-                                        <div className="flex justify-between bg-black/30 p-2 rounded">
-                                          <span className="text-gray-400">
-                                            MON per Token:
-                                          </span>
-                                          <span className="text-purple-400 font-mono">
-                                            {parseFloat(
-                                              h.monPerToken || "0"
-                                            ).toFixed(6)}
-                                          </span>
-                                        </div>
-                                        <div className="flex justify-between bg-black/30 p-2 rounded">
-                                          <span className="text-gray-400">
-                                            Market Data:
-                                          </span>
-                                          <span className="text-gray-500 font-mono">
-                                            Limited
-                                          </span>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                {/* Categories Section */}
-                                <div className="mt-6 pt-4 border-t border-cyan-400/20">
-                                  <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-3">
-                                    Token Categories
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    {h.categories && h.categories.length > 0 ? (
-                                      h.categories.map((cat) => (
+                                    <div className="flex flex-wrap gap-1">
+                                      {h.categories?.slice(0, 2).map((cat) => (
                                         <span
                                           key={cat}
-                                          className={`px-3 py-1 rounded-full text-xs font-bold border-2 transition-all hover:shadow-lg ${
-                                            cat === "verified"
-                                              ? "bg-green-500/20 border-green-400 text-green-400 hover:shadow-green-400/30"
-                                              : cat === "fake"
-                                              ? "bg-red-500/20 border-red-400 text-red-400 hover:shadow-red-400/30 animate-pulse"
-                                              : cat === "ecosystem"
-                                              ? "bg-purple-500/20 border-purple-400 text-purple-400 hover:shadow-purple-400/30"
+                                          className={`text-xs px-2 py-0.5 rounded font-bold border ${
+                                            cat === "ecosystem"
+                                              ? "bg-purple-500/20 border-purple-400 text-purple-400"
                                               : cat === "lst"
-                                              ? "bg-blue-500/20 border-blue-400 text-blue-400 hover:shadow-blue-400/30"
-                                              : cat === "stablecoin"
-                                              ? "bg-yellow-500/20 border-yellow-400 text-yellow-400 hover:shadow-yellow-400/30"
-                                              : "bg-gray-800/50 border-gray-600 text-gray-300 hover:shadow-gray-600/30"
+                                              ? "bg-blue-500/20 border-blue-400 text-blue-400"
+                                              : cat === "verified"
+                                              ? "bg-green-500/20 border-green-400 text-green-400"
+                                              : "bg-gray-800 border-gray-600 text-gray-300"
                                           }`}
                                         >
                                           {cat.toUpperCase()}
                                         </span>
-                                      ))
-                                    ) : (
-                                      <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-800/50 border-2 border-gray-600 text-gray-500">
-                                        No categories available
-                                      </span>
-                                    )}
+                                      ))}
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            )}
 
-                            {/* Warning Messages */}
-                            {isFake && (
-                              <div className="mt-3 p-3 bg-red-500/20 border border-red-400 rounded text-sm text-red-400">
-                                <strong>WARNING:</strong> This token is marked
-                                as FAKE. Do not trade or hold.
-                              </div>
-                            )}
-                            {isLowConfidence && !isFake && (
-                              <div className="mt-3 p-3 bg-yellow-500/20 border border-yellow-400 rounded text-sm text-yellow-400">
-                                <strong>LOW CONFIDENCE:</strong> Price data may
-                                be unreliable. Trade with caution.
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+                                {/* Values - 3 columns */}
+                                <div className="col-span-3 text-right">
+                                  <div className="space-y-1">
+                                    <div className="text-2xl font-bold text-white font-mono">
+                                      {formatUSD(h.valueUSD)}
+                                    </div>
+                                    <div className="text-sm text-gray-400 font-mono">
+                                      {displayBalance} {h.symbol}
+                                    </div>
+                                    <div className="text-xs text-gray-500 font-mono">
+                                      @ {formatUSD(h.price)}
+                                    </div>
+                                  </div>
+                                </div>
 
-                    <div className="border-t-2 border-cyan-400/30 pt-6">
-                      <h3 className="text-2xl font-bold mb-4 text-purple-400 text-center">
-                        AI PORTFOLIO ANALYSIS
-                      </h3>
-                      <p className="text-gray-300 text-center mb-6">
-                        Let our AI analyze your portfolio and suggest optimal
-                        rebalancing trades
-                      </p>
-                      <button
-                        onClick={handleComputeStrategy}
-                        disabled={loading}
-                        className="btn btn-success w-full text-lg"
-                      >
-                        {loading
-                          ? "ANALYZING..."
-                          : "🤖 GET AI ANALYSIS & SUGGESTIONS →"}
-                      </button>
+                                {/* Confidence & Allocation - 2 columns */}
+                                <div className="col-span-2 space-y-2">
+                                  <div className="text-center">
+                                    <div
+                                      className={`text-lg font-bold font-mono ${confidenceColor}`}
+                                    >
+                                      {confidence}%
+                                    </div>
+                                    <div className="text-xs text-gray-500 uppercase">
+                                      Confidence
+                                    </div>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <div className="text-xs text-gray-400 text-center font-mono">
+                                      {formatPercentage(h.percentage)}
+                                    </div>
+                                    <div className="bg-black border border-cyan-400/30 rounded-full h-2 overflow-hidden">
+                                      <div
+                                        className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(0,255,247,0.5)]"
+                                        style={{
+                                          width: `${Math.min(
+                                            h.percentage,
+                                            100
+                                          )}%`,
+                                        }}
+                                      ></div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* More Info Button - 1 column */}
+                                <div className="col-span-1">
+                                  <button
+                                    onClick={() =>
+                                      setExpandedToken(
+                                        isExpanded ? null : h.token
+                                      )
+                                    }
+                                    className="w-full px-3 py-2 rounded-lg bg-black border-2 border-cyan-400/50 hover:border-cyan-400 text-cyan-400 text-xs font-bold transition-all hover:shadow-[0_0_15px_rgba(0,255,247,0.3)]"
+                                  >
+                                    {isExpanded ? "▲" : "▼"}
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Expanded Details - Enhanced */}
+                              {isExpanded && (
+                                <div className="mt-6 pt-6 border-t-2 border-cyan-400/30 bg-black rounded-lg p-6 border-2 border-cyan-400/50 shadow-[0_0_30px_rgba(0,255,247,0.3)]">
+                                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                    {/* Contract Address */}
+                                    <div className="space-y-2">
+                                      <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide">
+                                        Contract Address
+                                      </div>
+                                      <div className="font-mono text-xs bg-black/50 p-3 rounded border border-cyan-400/30 break-all">
+                                        {h.token ===
+                                        "0x0000000000000000000000000000000000000000" ? (
+                                          <span className="text-purple-400 font-bold">
+                                            Native MON Token
+                                          </span>
+                                        ) : (
+                                          <span className="text-cyan-400">
+                                            {h.token}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {h.token !==
+                                        "0x0000000000000000000000000000000000000000" && (
+                                        <a
+                                          href={`https://testnet.monadexplorer.com/address/${h.token}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-block text-xs text-blue-400 hover:text-blue-300 hover:underline transition-colors"
+                                        >
+                                          View on Explorer →
+                                        </a>
+                                      )}
+                                    </div>
+
+                                    {/* Token Details */}
+                                    <div className="space-y-4">
+                                      <div>
+                                        <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-2">
+                                          Token Details
+                                        </div>
+                                        <div className="space-y-2 text-sm">
+                                          <div className="flex justify-between bg-black/30 p-2 rounded">
+                                            <span className="text-gray-400">
+                                              Decimals:
+                                            </span>
+                                            <span className="text-white font-mono">
+                                              {h.decimals}
+                                            </span>
+                                          </div>
+                                          <div className="flex justify-between bg-black/30 p-2 rounded">
+                                            <span className="text-gray-400">
+                                              Price:
+                                            </span>
+                                            <span className="text-green-400 font-mono font-bold">
+                                              ${h.price.toFixed(6)}
+                                            </span>
+                                          </div>
+                                          <div className="flex justify-between bg-black/30 p-2 rounded">
+                                            <span className="text-gray-400">
+                                              24h Change:
+                                            </span>
+                                            <span className="text-gray-500 font-mono">
+                                              Unknown
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* MON Values */}
+                                    <div className="space-y-4">
+                                      <div>
+                                        <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-2">
+                                          MON Metrics
+                                        </div>
+                                        <div className="space-y-2 text-sm">
+                                          <div className="flex justify-between bg-black/30 p-2 rounded">
+                                            <span className="text-gray-400">
+                                              MON Value:
+                                            </span>
+                                            <span className="text-purple-400 font-mono font-bold">
+                                              {parseFloat(
+                                                h.monValue || "0"
+                                              ).toFixed(4)}{" "}
+                                              MON
+                                            </span>
+                                          </div>
+                                          <div className="flex justify-between bg-black/30 p-2 rounded">
+                                            <span className="text-gray-400">
+                                              MON per Token:
+                                            </span>
+                                            <span className="text-purple-400 font-mono">
+                                              {parseFloat(
+                                                h.monPerToken || "0"
+                                              ).toFixed(6)}
+                                            </span>
+                                          </div>
+                                          <div className="flex justify-between bg-black/30 p-2 rounded">
+                                            <span className="text-gray-400">
+                                              Market Data:
+                                            </span>
+                                            <span className="text-gray-500 font-mono">
+                                              Limited
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Categories Section */}
+                                  <div className="mt-6 pt-4 border-t border-cyan-400/20">
+                                    <div className="text-cyan-400 font-bold text-sm uppercase tracking-wide mb-3">
+                                      Token Categories
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {h.categories &&
+                                      h.categories.length > 0 ? (
+                                        h.categories.map((cat) => (
+                                          <span
+                                            key={cat}
+                                            className={`px-3 py-1 rounded-full text-xs font-bold border-2 transition-all hover:shadow-lg ${
+                                              cat === "verified"
+                                                ? "bg-green-500/20 border-green-400 text-green-400 hover:shadow-green-400/30"
+                                                : cat === "fake"
+                                                ? "bg-red-500/20 border-red-400 text-red-400 hover:shadow-red-400/30 animate-pulse"
+                                                : cat === "ecosystem"
+                                                ? "bg-purple-500/20 border-purple-400 text-purple-400 hover:shadow-purple-400/30"
+                                                : cat === "lst"
+                                                ? "bg-blue-500/20 border-blue-400 text-blue-400 hover:shadow-blue-400/30"
+                                                : cat === "stablecoin"
+                                                ? "bg-yellow-500/20 border-yellow-400 text-yellow-400 hover:shadow-yellow-400/30"
+                                                : "bg-gray-800/50 border-gray-600 text-gray-300 hover:shadow-gray-600/30"
+                                            }`}
+                                          >
+                                            {cat.toUpperCase()}
+                                          </span>
+                                        ))
+                                      ) : (
+                                        <span className="px-3 py-1 rounded-full text-xs font-bold bg-gray-800/50 border-2 border-gray-600 text-gray-500">
+                                          No categories available
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Warning Messages */}
+                              {isFake && (
+                                <div className="mt-3 p-3 bg-red-500/20 border border-red-400 rounded text-sm text-red-400">
+                                  <strong>WARNING:</strong> This token is marked
+                                  as FAKE. Do not trade or hold.
+                                </div>
+                              )}
+                              {isLowConfidence && !isFake && (
+                                <div className="mt-3 p-3 bg-yellow-500/20 border border-yellow-400 rounded text-sm text-yellow-400">
+                                  <strong>LOW CONFIDENCE:</strong> Price data
+                                  may be unreliable. Trade with caution.
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                     </div>
                   </>
                 ) : (
@@ -2369,39 +2513,28 @@ By signing this message, I grant permission for the AI agent to execute trades w
                 </div>
               ) : (
                 <div className="space-y-6">
-                  {/* Token Count Info */}
-                  <div className="p-4 bg-black rounded-lg border-2 border-cyan-400/30">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <span className="text-cyan-400 font-bold">
-                          {swapState.allTokens.length}
-                        </span>
-                        <span className="text-gray-400 ml-2">
-                          total tokens available
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-green-400 font-bold">
-                          {
-                            swapState.allTokens.filter(
-                              (t: any) => parseFloat(t.balance) > 0
-                            ).length
-                          }
-                        </span>
-                        <span className="text-gray-400 ml-2">
-                          in your wallet
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
                   {/* Swap Form */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {/* From Token */}
-                    <div className="p-4 bg-black rounded-lg border-2 border-red-400/50">
-                      <h3 className="font-bold text-red-400 mb-4">FROM</h3>
+                    <div className="p-4 bg-black rounded-lg border-2 border-red-500">
+                      <h3 className="font-bold text-red-500 mb-4">FROM</h3>
+
+                      {/* Search Input */}
+                      <input
+                        type="text"
+                        placeholder="Search tokens..."
+                        value={swapState.fromTokenSearch || ""}
+                        onChange={(e) =>
+                          setSwapState((prev) => ({
+                            ...prev,
+                            fromTokenSearch: e.target.value,
+                          }))
+                        }
+                        className="w-full p-2 bg-black border border-red-500 rounded text-red-500 mb-2 placeholder-red-300 focus:border-red-400 focus:ring-1 focus:ring-red-500/50"
+                      />
+
                       <select
-                        className="w-full p-3 bg-black border-2 border-red-400/50 rounded text-white mb-4 hover:border-red-400 focus:border-red-400 focus:ring-2 focus:ring-red-400/20 transition-all duration-300 font-mono text-sm shadow-lg shadow-red-400/10"
+                        className="token-select-from w-full p-3 bg-black border-2 border-red-500 rounded text-red-500 mb-4 hover:border-red-400 focus:border-red-400 focus:ring-2 focus:ring-red-500/50 transition-all duration-300 font-mono text-sm shadow-lg shadow-red-500/20"
                         value={swapState.fromToken}
                         onChange={(e) =>
                           setSwapState((prev) => ({
@@ -2414,7 +2547,30 @@ By signing this message, I grant permission for the AI agent to execute trades w
                         <option value="">Select token to sell</option>
                         <optgroup label="Your Holdings">
                           {swapState.allTokens
-                            .filter((t: any) => parseFloat(t.balance) > 0)
+                            .filter(
+                              (t: any) =>
+                                parseFloat(t.balance) > 0 &&
+                                (swapState.fromTokenSearch === "" ||
+                                  !swapState.fromTokenSearch ||
+                                  t.symbol
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.fromTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.name
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.fromTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.address
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.fromTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ))
+                            )
                             .map((t: any) => (
                               <option key={t.address} value={t.address}>
                                 {t.symbol} - {parseFloat(t.balance).toFixed(4)}{" "}
@@ -2424,8 +2580,31 @@ By signing this message, I grant permission for the AI agent to execute trades w
                         </optgroup>
                         <optgroup label="All Available Tokens">
                           {swapState.allTokens
-                            .filter((t: any) => parseFloat(t.balance) === 0)
-                            .slice(0, 20) // Limit to prevent UI overflow
+                            .filter(
+                              (t: any) =>
+                                parseFloat(t.balance) === 0 &&
+                                (swapState.fromTokenSearch === "" ||
+                                  !swapState.fromTokenSearch ||
+                                  t.symbol
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.fromTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.name
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.fromTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.address
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.fromTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ))
+                            )
+                            // Show all available tokens (no limit)
                             .map((t: any) => (
                               <option key={t.address} value={t.address}>
                                 {t.symbol} - {t.name} ($
@@ -2472,10 +2651,25 @@ By signing this message, I grant permission for the AI agent to execute trades w
                     </div>
 
                     {/* To Token */}
-                    <div className="p-4 bg-black rounded-lg border-2 border-green-400/50">
-                      <h3 className="font-bold text-green-400 mb-4">TO</h3>
+                    <div className="p-4 bg-black rounded-lg border-2 border-green-500">
+                      <h3 className="font-bold text-green-500 mb-4">TO</h3>
+
+                      {/* Search Input */}
+                      <input
+                        type="text"
+                        placeholder="Search tokens..."
+                        value={swapState.toTokenSearch || ""}
+                        onChange={(e) =>
+                          setSwapState((prev) => ({
+                            ...prev,
+                            toTokenSearch: e.target.value,
+                          }))
+                        }
+                        className="w-full p-2 bg-black border border-green-500 rounded text-green-500 mb-2 placeholder-green-300 focus:border-green-400 focus:ring-1 focus:ring-green-500/50"
+                      />
+
                       <select
-                        className="w-full p-3 bg-black border-2 border-green-400/50 rounded text-white mb-4 hover:border-green-400 focus:border-green-400 focus:ring-2 focus:ring-green-400/20 transition-all duration-300 font-mono text-sm shadow-lg shadow-green-400/10"
+                        className="token-select-to w-full p-3 bg-black border-2 border-green-500 rounded text-green-500 mb-4 hover:border-green-400 focus:border-green-400 focus:ring-2 focus:ring-green-500/50 transition-all duration-300 font-mono text-sm shadow-lg shadow-green-500/20"
                         value={swapState.toToken}
                         onChange={(e) =>
                           setSwapState((prev) => ({
@@ -2488,9 +2682,30 @@ By signing this message, I grant permission for the AI agent to execute trades w
                         <optgroup label="Popular Tokens">
                           {swapState.allTokens
                             .filter(
-                              (t: any) => t.address !== swapState.fromToken
+                              (t: any) =>
+                                t.address !== swapState.fromToken &&
+                                (swapState.toTokenSearch === "" ||
+                                  !swapState.toTokenSearch ||
+                                  t.symbol
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.toTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.name
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.toTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.address
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.toTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ))
                             )
-                            .slice(0, 10)
+                            // Show all popular tokens (no limit)
                             .map((t: any) => (
                               <option key={t.address} value={t.address}>
                                 {t.symbol} - {t.name}
@@ -2500,9 +2715,30 @@ By signing this message, I grant permission for the AI agent to execute trades w
                         <optgroup label="All Available Tokens">
                           {swapState.allTokens
                             .filter(
-                              (t: any) => t.address !== swapState.fromToken
+                              (t: any) =>
+                                t.address !== swapState.fromToken &&
+                                (swapState.toTokenSearch === "" ||
+                                  !swapState.toTokenSearch ||
+                                  t.symbol
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.toTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.name
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.toTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ) ||
+                                  t.address
+                                    ?.toLowerCase()
+                                    .includes(
+                                      swapState.toTokenSearch?.toLowerCase() ||
+                                        ""
+                                    ))
                             )
-                            .slice(10, 50)
+                            // Show all remaining tokens (no limit)
                             .map((t: any) => (
                               <option key={t.address} value={t.address}>
                                 {t.symbol} - {t.name}
@@ -2521,6 +2757,8 @@ By signing this message, I grant permission for the AI agent to execute trades w
                             swapState.loadingQuote
                               ? "Loading..."
                               : swapState.toAmount
+                              ? parseFloat(swapState.toAmount).toFixed(6)
+                              : "0.00"
                           }
                           className="w-full p-3 bg-black border-2 border-green-400/50 rounded text-white text-right text-2xl font-bold font-mono shadow-lg shadow-green-400/10 glow-green"
                           readOnly
@@ -2674,11 +2912,10 @@ By signing this message, I grant permission for the AI agent to execute trades w
                             <span className="text-gray-400">Network Fee:</span>
                             <span className="text-white font-bold">
                               {swapState.quote.estimatedGas
-                                ? `~${(
-                                    parseFloat(swapState.quote.estimatedGas) /
-                                    1e18
-                                  ).toFixed(6)} MON`
-                                : "~0.001 MON"}
+                                ? `~${parseFloat(
+                                    swapState.quote.estimatedGas
+                                  ).toLocaleString()} gas units`
+                                : "~200,000 gas units"}
                             </span>
                           </div>
                         </div>
@@ -2950,16 +3187,18 @@ By signing this message, I grant permission for the AI agent to execute trades w
                   </div>
                 </div>
 
-                {aiAnalysis.result.reasoning && (
+                {(aiAnalysis.result.rationale ||
+                  aiAnalysis.result.reasoning) && (
                   <div className="p-4 bg-blue-500/10 border-2 border-blue-400/50 rounded-lg">
                     <div className="flex items-center gap-2 mb-2">
                       <img src="/agent.png" alt="AI" className="w-5 h-5" />
                       <div className="text-blue-400 font-bold">
-                        AI REASONING
+                        CRESTAL AI ANALYSIS
                       </div>
                     </div>
-                    <div className="text-sm text-gray-300 leading-relaxed">
-                      {aiAnalysis.result.reasoning}
+                    <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
+                      {aiAnalysis.result.rationale ||
+                        aiAnalysis.result.reasoning}
                     </div>
                   </div>
                 )}
@@ -3113,19 +3352,19 @@ By signing this message, I grant permission for the AI agent to execute trades w
 
             <div>
               <div className="text-sm text-gray-400 uppercase mb-1">
-                Max Trade Amount:
+                Risk Appetite:
               </div>
-              <div className="text-sm text-white">
-                ${delegationParams.maxTradeAmount} USD
+              <div className="text-sm text-white capitalize">
+                {delegationParams.riskLevel}
               </div>
             </div>
 
             <div>
               <div className="text-sm text-gray-400 uppercase mb-1">
-                Daily Trade Limit:
+                Rebalance Frequency:
               </div>
               <div className="text-sm text-white">
-                {delegationParams.maxTradesPerDay} trades/day
+                Every {delegationParams.rebalanceInterval}h
               </div>
             </div>
 

@@ -13,13 +13,10 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const address = searchParams.get('address');
 
-    console.log('[TOKEN_DISCOVERY] Fetching all available tokens from Monorail...');
+    console.log('[TOKEN_DISCOVERY] Starting comprehensive token discovery from Monorail...');
+    console.log('[TOKEN_DISCOVERY] Expected: 16,000+ tokens based on Monorail documentation');
 
-    // First, get ALL tokens available on Monorail DEX
-    const allTokens = await monorailDataClient.getAllTokens();
-    console.log(`[TOKEN_DISCOVERY] Found ${allTokens.length} total tokens on Monorail`);
-
-    // If address provided, also get user's portfolio to show balances
+    // If address provided, first get user's portfolio to show balances
     let userPortfolio = null;
     if (address) {
       try {
@@ -28,6 +25,49 @@ export async function GET(request: NextRequest) {
       } catch (error) {
         console.warn('[TOKEN_DISCOVERY] Could not fetch user portfolio:', error);
       }
+    }
+
+    // Get ALL tokens available on Monorail DEX
+    let allTokens = await monorailDataClient.getAllTokens();
+    console.log(`[TOKEN_DISCOVERY] Retrieved ${allTokens.length} total tokens from Monorail`);
+    
+    // Fallback logic if no tokens returned
+    if (allTokens.length === 0) {
+      console.error(`[TOKEN_DISCOVERY] CRITICAL: No tokens returned from Monorail API!`);
+      console.log('[TOKEN_DISCOVERY] Attempting fallback to user portfolio only...');
+      
+      // Fallback: if no tokens from discovery, at least return user portfolio
+      if (userPortfolio && userPortfolio.tokens.length > 0) {
+        console.log(`[TOKEN_DISCOVERY] Fallback: Using ${userPortfolio.tokens.length} user portfolio tokens`);
+        allTokens = userPortfolio.tokens;
+      } else {
+        // Last resort: add some basic tokens manually
+        console.log('[TOKEN_DISCOVERY] Last resort: Adding basic tokens manually');
+        allTokens = [
+          { 
+            address: '0x0000000000000000000000000000000000000000', 
+            symbol: 'MON', 
+            name: 'Monad', 
+            decimals: 18, 
+            usd_per_token: '1.0',
+            categories: ['native'] 
+          },
+          { 
+            address: '0xf817257fed379853cde0fa4f97ab987181b1e5ea', 
+            symbol: 'USDC', 
+            name: 'USD Coin', 
+            decimals: 6, 
+            usd_per_token: '1.0',
+            categories: ['stablecoin'] 
+          }
+        ];
+      }
+    } else if (allTokens.length < 100) {
+      console.warn(`[TOKEN_DISCOVERY] WARNING: Only ${allTokens.length} tokens returned. Expected 16,000+ tokens.`);
+      console.log('[TOKEN_DISCOVERY] Sample tokens:', allTokens.slice(0, 5));
+      console.log('[TOKEN_DISCOVERY] This indicates an issue with the Monorail API endpoint or rate limiting.');
+    } else {
+      console.log(`[TOKEN_DISCOVERY] Successfully retrieved ${allTokens.length} tokens from Monorail`);
     }
 
     // Create a map of user balances for quick lookup

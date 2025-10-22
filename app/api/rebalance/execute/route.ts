@@ -4,6 +4,7 @@ import { bundlerClient } from '@/lib/config/viem-clients';
 import { createMetaMaskSmartAccount } from '@/lib/smart-account/create-account';
 import { type RebalanceTrade } from '@/lib/ai/rebalancer';
 import { type Address, type Hex } from 'viem';
+import { toWei } from '@/lib/utils/monorail-utils';
 
 /**
  * API Route: Execute Rebalancing Trades
@@ -35,10 +36,20 @@ export async function POST(request: NextRequest) {
 
     // Get quotes for all trades (slippage handled during execution)
     const quotePromises = trades.map((trade: RebalanceTrade) => {
+      // Monorail expects amounts in WEI format (based on test-monorail-api.js)
+      // The AI rebalancer provides amounts in human-readable format, so we need to convert to WEI
+      // TODO: Get decimals from token metadata instead of assuming 18
+      const decimals = 18; // Most tokens use 18 decimals
+      const amountInWei = toWei(trade.amount, decimals);
+
+      console.log(`Converting ${trade.amount} ${trade.fromSymbol} to WEI: ${amountInWei}`);
+      console.log(`Getting quote from ${trade.fromToken} to ${trade.toToken}`);
+
       const quoteParams: MonorailQuoteParams = {
         from: trade.fromToken as Address,
         to: trade.toToken as Address,
-        amount: trade.amount,
+        amount: amountInWei, // Convert to WEI format - Monorail expects this
+        sender: smartAccount.address, // Add sender for complete transaction data
         // slippage not used in Monorail quote API
       };
       return monorailClient.getQuote(quoteParams);

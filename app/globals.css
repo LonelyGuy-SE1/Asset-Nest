@@ -329,6 +329,7 @@ select option {
   background: #000000;
   color: #ffffff;
   padding: 8px;
+  font-family: "Courier New", monospace;
 }
 
 select optgroup {
@@ -336,6 +337,23 @@ select optgroup {
   color: #00fff7;
   font-weight: bold;
   font-family: "Courier New", monospace;
+}
+
+/* Enhanced Select Option Colors */
+.token-select-from option {
+  color: #ef4444 !important; /* Red for FROM tokens */
+}
+
+.token-select-to option {
+  color: #10b981 !important; /* Green for TO tokens */
+}
+
+.token-select-from optgroup {
+  color: #dc2626 !important; /* Darker red for FROM optgroups */
+}
+
+.token-select-to optgroup {
+  color: #059669 !important; /* Darker green for TO optgroups */
 }
 
 /* Layout Styles */

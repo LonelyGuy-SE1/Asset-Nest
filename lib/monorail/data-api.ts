@@ -53,7 +53,7 @@ export class MonorailDataClient {
     // Pathfinder API for swaps (different from Data API)
     this.baseUrl = process.env.NEXT_PUBLIC_MONORAIL_API_URL || 'https://testnet-pathfinder.monorail.xyz';
 
-    // Data API for balances and token info
+    // Data API for balances and token info - using the correct testnet URLs with /v1
     this.dataApiUrl = process.env.NEXT_PUBLIC_MONORAIL_DATA_API_URL || 'https://testnet-api.monorail.xyz/v1';
   }
 
@@ -61,7 +61,7 @@ export class MonorailDataClient {
    * Get portfolio balances for an address
    * Reference: https://testnet-preview.monorail.xyz/developers/api-reference/data
    *
-   * Correct endpoint: GET /wallet/{address}/balances
+   * Correct endpoint: GET /v1/wallet/{address}/balances
    */
   async getPortfolio(address: Address): Promise<MonorailPortfolio> {
     console.log('Fetching portfolio from Monorail Data API:', address);
@@ -77,6 +77,13 @@ export class MonorailDataClient {
       const data = response.data;
 
       console.log('Raw Monorail Data API response:', JSON.stringify(data, null, 2));
+      
+      // Log individual token data to see what logo fields are available
+      if (data.length > 0) {
+        console.log('First token sample:', JSON.stringify(data[0], null, 2));
+        console.log('Logo field value:', data[0].logo);
+        console.log('Available fields:', Object.keys(data[0]));
+      }
 
       // Transform Monorail response to our format
       // The API returns an array of token objects directly
@@ -200,25 +207,42 @@ export class MonorailDataClient {
   /**
    * Get all tokens list
    *
-   * GET /tokens
+   * GET /v1/tokens
    */
   async getAllTokens(): Promise<any[]> {
-    console.log('Fetching all tokens from Monorail');
+    console.log('Fetching all tokens from Monorail Data API');
 
     try {
-      const response = await axios.get(`${this.dataApiUrl}/tokens`, {
+      // Use the correct endpoint from test-monorail-data-api.js
+      const endpoint = `${this.dataApiUrl}/tokens`;
+
+      console.log(`Fetching from endpoint: ${endpoint}`);
+      const response = await axios.get(endpoint, {
         headers: {
           'Content-Type': 'application/json',
         },
+        timeout: 10000,
       });
 
-      return response.data || [];
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('Monorail tokens list error:', error.response?.data || error.message);
+      const tokens = response.data || [];
+      console.log(`Successfully fetched ${tokens.length} tokens from Monorail Data API`);
+
+      // Log first few tokens to see the structure
+      if (tokens.length > 0) {
+        console.log('First 3 tokens:', tokens.slice(0, 3));
+      }
+
+      return tokens;
+    } catch (error: any) {
+      console.error('getAllTokens failed:', error.response?.data || error.message);
+
+      // If endpoint doesn't exist yet, return empty array
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        console.warn('Monorail tokens endpoint not available, returning empty array');
         return [];
       }
-      throw error;
+
+      return [];
     }
   }
 
